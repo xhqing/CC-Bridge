@@ -2,7 +2,7 @@
 
 // DeepSeek 上游适配器 —— Claude Code ↔ DeepSeek-V4 桥接的上游专属逻辑。
 // 框架层（core/server.js）按统一 adapter 接口调用本文件。新增其它上游时，
-// 在各自的 cc-<name>-bridge/adapter.js 实现同一接口即可，无需改动 core/。
+// 在各自的 <name>-bridge/adapter.js 实现同一接口即可，无需改动 core/。
 //
 // DeepSeek 提供官方 Anthropic 兼容端点（base_url 为 https://api.deepseek.com/anthropic，
 // 接收标准 Anthropic Messages API 格式），故本桥直接透传 Anthropic 请求体，只需做

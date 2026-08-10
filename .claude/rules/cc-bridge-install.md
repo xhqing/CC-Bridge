@@ -8,12 +8,12 @@ cc-bridge 的运行版本**必须统一从 GitHub Release 的 tgz 全局安装**
 
 ## 安装/升级流程
 
-1. 下载 Release tgz（仓库 `xhqing/CC-BRIDGE` 为 **private**，`curl` 匿名下载返回 404，必须用带认证的 `gh`）：
+1. 下载 Release tgz（仓库 `xhqing/CC-Bridge` 为 **public**，`curl` 匿名下载与带认证的 `gh` 均可）：
    ```
    gh release download <tag> --pattern 'cc-bridge-<ver>.tgz' --dir /tmp --clobber
    ```
-2. 全局安装：`npm install -g /tmp/cc-bridge-<ver>.tgz`
-3. 重启 daemon 使其从安装副本启动：`cc-bridge restart`（默认上游 glm；显式写 `cc-bridge glm restart`）。
+2. 全局安装：`npm install -g /tmp/cc-bridge-<ver>.tgz`。安装后 postinstall 自动在 `~/.cc-bridge/` 下生成 `ds.env`（`ds-bridge/ds.env.example` 的副本）；已存在则不覆盖。
+3. 重启 daemon 使其从安装副本启动：`cc-bridge restart`（默认上游 ds；显式写 `cc-bridge ds restart`）。
 4. 验证：daemon 进程路径是安装副本（非项目源码）；`npm list -g cc-bridge` 无 `-> 项目目录` 箭头。
 
 ## 发新版本流程

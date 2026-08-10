@@ -1,21 +1,21 @@
 <div align="center">
-  <img src="assets/logo.svg" alt="CC-BRIDGE" width="640">
+  <img src="assets/logo.svg" alt="CC-Bridge" width="640">
 </div>
 
-# CC-BRIDGE —— Claude Code 上游桥接框架
+# CC-Bridge —— Claude Code 上游桥接框架
 
 > [English](README.md)
 
 <div align="center">
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
-![GitHub last commit](https://img.shields.io/github/last-commit/xhqing/CC-BRIDGE)
+![GitHub last commit](https://img.shields.io/github/last-commit/xhqing/CC-Bridge)
 ![Built with Claude Code](https://img.shields.io/badge/Built%20with-Claude%20Code-19C37D)
 ![Type: Project](https://img.shields.io/badge/Type-Project-lightgrey)
 
 </div>
 
-一个本地透明桥接框架，让 **Claude Code 访问第三方模型上游**（GLM / Kimi / Qwen ……）。每个上游在独立的 `cc-<name>-bridge/` 目录下有一个 adapter 模块，共享同一套框架（`core/`）。作为白名单伪模型中转的附带效果，CC-BRIDGE 为非官方 provider **解锁 `/effort xhigh`**；同时支持**多 API_KEY 容灾**，并能**强制模型始终以 `max` 思考等级运行**。
+一个本地透明桥接框架，让 **Claude Code 访问第三方模型上游**（GLM / Kimi / Qwen ……）。每个上游在独立的 `<name>-bridge/` 目录下有一个 adapter 模块，共享同一套框架（`core/`）。作为白名单伪模型中转的附带效果，CC-Bridge 为非官方 provider **解锁 `/effort xhigh`**；同时支持**多 API_KEY 容灾**，并能**强制模型始终以 `max` 思考等级运行**。
 
 > **当前已实现：** `glm`（z.ai GLM-5.2）、`ds`（DeepSeek-V4）、`mimo`（小米 MiMo）。`kimi` / `qwen` 为预留占位——见[添加新上游](#添加新上游)。
 
@@ -25,15 +25,15 @@
 
 | 上游 | 状态 | adapter | 目标模型 |
 |------|------|---------|----------|
-| `glm` | ✅ 已实现 | [cc-glm-bridge/](cc-glm-bridge/) | z.ai 上的 GLM-5.2 |
-| `ds` | ✅ 已实现 | [cc-ds-bridge/](cc-ds-bridge/) | DeepSeek-V4（pro / flash） |
-| `mimo` | ✅ 已实现 | [cc-mimo-bridge/](cc-mimo-bridge/) | 小米 MiMo-V2.5-Pro |
-| `kimi` | 🚧 预留 | [cc-kimi-bridge/](cc-kimi-bridge/) | — |
-| `qwen` | 🚧 预留 | [cc-qwen-bridge/](cc-qwen-bridge/) | — |
+| `glm` | ✅ 已实现 | [glm-bridge/](glm-bridge/) | z.ai 上的 GLM-5.2 |
+| `ds` | ✅ 已实现 | [ds-bridge/](ds-bridge/) | DeepSeek-V4（pro / flash） |
+| `mimo` | ✅ 已实现 | [mimo-bridge/](mimo-bridge/) | 小米 MiMo-V2.5-Pro |
+| `kimi` | 🚧 预留 | [kimi-bridge/](kimi-bridge/) | — |
+| `qwen` | 🚧 预留 | [qwen-bridge/](qwen-bridge/) | — |
 
 ## 它能做什么
 
-- **框架 + 按上游分 adapter。** 所有与上游无关的通用逻辑（HTTP 服务、多 KEY 容灾、model 改写、modelUsage 注入、daemon）都在 [`core/`](core/)；每个上游的专属逻辑（请求体适配、effort 映射、模型上限表）在各自的 `cc-<name>-bridge/adapter.js`。新增上游只需加一个文件 + 注册表一行。
+- **框架 + 按上游分 adapter。** 所有与上游无关的通用逻辑（HTTP 服务、多 KEY 容灾、model 改写、modelUsage 注入、daemon）都在 [`core/`](core/)；每个上游的专属逻辑（请求体适配、effort 映射、模型上限表）在各自的 `<name>-bridge/adapter.js`。新增上游只需加一个文件 + 注册表一行。
 - **解锁 effort。** 通过白名单伪模型 ID 中转，绕过 Claude Code 客户端的 effort 闸门，让第三方上游也能用 `/effort xhigh`。（见[effort 闸门（xhigh 与 max）](#effort-闸门xhigh-与-max)。）
 - **多 KEY 容灾。** 把多个 KEY 各自成行配成编号变量（`API_KEY_1=…`、`API_KEY_2=…`…，每行一个，方便单独注释账号来源、或整行注释掉禁用某 KEY；旧式逗号分隔 `API_KEY=k1,k2` 仍兼容）。某 KEY 返回 `401`/`403`（被拒 / 额度用尽）时，桥把它熔断 60 秒并立即切换下一个 KEY；瞬态错误（`429`/`5xx`/网络）先在同 KEY 重试、用尽再换。URL 始终不变，只轮换 KEY。（见[多 KEY 容灾](#多-key-容灾)。）
 - **始终 max 思考（GLM）。** GLM adapter 在每条请求上强制 `reasoning_effort = max`，不受客户端 `/effort` 档位影响。
@@ -51,7 +51,7 @@ Claude Code ──POST /v1/messages──▶  cc-bridge (127.0.0.1:8787)
                                     · 向响应注入 modelUsage
 ```
 
-上游由 `<upstream>` 参数选定（默认 `glm`）。桥加载 `core/adapter.js` → 对应上游的 `adapter.js`，对每条转发的请求应用该 adapter 的 `adaptRequestBody`。
+上游由 `<upstream>` 参数选定（默认 `ds`）。桥加载 `core/adapter.js` → 对应上游的 `adapter.js`，对每条转发的请求应用该 adapter 的 `adaptRequestBody`。
 
 ## effort 闸门（xhigh 与 max）
 
@@ -66,7 +66,7 @@ Claude Code 把 `max`/`xhigh` 两档 effort 卡在**客户端**检查上：当�
 
 ## 安装
 
-CC-BRIDGE 以构建好的 tarball 发布在 GitHub Release（仓库为私有，需用带认证的 `gh` 下载）：
+CC-Bridge 以构建好的 tarball 发布在 GitHub Release（仓库为公开，可用 `gh` 或 `curl` 下载）：
 
 ```bash
 gh release download v2.0.0 --pattern 'cc-bridge-2.0.0.tgz' --dir /tmp --clobber
@@ -75,7 +75,7 @@ npm install -g /tmp/cc-bridge-2.0.0.tgz
 
 > 权限不足？用 `sudo npm install -g …`，或者一次性设一个用户可写的前缀（`npm config set prefix ~/.local`，确保 `~/.local/bin` 在 PATH 中）后再不带 sudo 运行。
 
-安装后，`cc-bridge` 就在 PATH 中，任意目录可用。
+安装后，`cc-bridge` 就在 PATH 中，任意目录可用。安装过程会自动在 `~/.cc-bridge/` 下准备好默认上游的 `ds.env`（内容即 `ds.env.example` 的副本），填好 API key 即可直接 `cc-bridge start`；若该文件已存在则原样保留、不会覆盖。
 
 ## 配置
 
@@ -110,7 +110,7 @@ PROXY_LOG=1                             # 0 关闭每请求日志
 ## 用法
 
 ```bash
-cc-bridge start           # 默认上游（glm），后台（detached）
+cc-bridge start           # 默认上游（ds），后台（detached）
 cc-bridge daemon          # start 的别名（后台）
 cc-bridge claude [args]   # 启动桥接 + 启动指向它的 claude
 cc-bridge stop            # 停止后台服务
@@ -175,15 +175,15 @@ cc-bridge claude -- -p "hello"   # 也接受 "--" 分隔符
 
 ## 添加新上游
 
-CC-BRIDGE 就是为扩展而设计的。新增一个上游（如 `kimi`）：
+CC-Bridge 就是为扩展而设计的。新增一个上游（如 `kimi`）：
 
-1. **创建 adapter** `cc-kimi-bridge/adapter.js`，实现 adapter 接口（见 [cc-glm-bridge/adapter.js](cc-glm-bridge/adapter.js) 和 [core/adapter.js](core/adapter.js) 的注释）：
+1. **创建 adapter** `kimi-bridge/adapter.js`，实现 adapter 接口（见 [glm-bridge/adapter.js](glm-bridge/adapter.js) 和 [core/adapter.js](core/adapter.js) 的注释）：
    - `name`、`displayName`、`defaultTarget`、`defaultSpoof`
    - `defaultThinking`（默认思考等级：`max` / `high` / `none`）
    - `modelMaxTokens`（`{ 模型ID: 最大输出token }`）
    - `adaptRequestBody(obj, ctx)`——为该上游适配 Anthropic 请求体；`ctx = { target }`
 2. **注册** 在 [core/adapter.js](core/adapter.js) 里把 `kimi` 的 `implemented` 改为 `true`。
-3. **文档** 写 `cc-kimi-bridge/README.md`，按需补配置模板。
+3. **文档** 写 `kimi-bridge/README.md`，按需补配置模板。
 
 完成——框架、CLI、多 KEY 容灾、daemon 全部无需改动即可工作。用户随后用 `cc-bridge kimi start`、编辑 `~/.cc-bridge/kimi.env` 等。
 
@@ -198,11 +198,11 @@ CC-BRIDGE 就是为扩展而设计的。新增一个上游（如 `kimi`）：
 | `core/daemon.js`          | 后台进程管理（按上游的 pid + 日志）                |
 | `core/claude.js`          | 启动桥接 + 通过它启动 `claude`                    |
 | `core/util.js`            | 端口清理 / health 探测 / 就绪等待                 |
-| `cc-glm-bridge/adapter.js`   | GLM（z.ai GLM-5.2）adapter——请求体适配、按模型配思考等级、模型上限表 |
-| `cc-ds-bridge/adapter.js`    | DeepSeek（DeepSeek-V4）adapter——请求体适配、按模型配思考等级 |
-| `cc-mimo-bridge/adapter.js`  | MiMo（小米 MiMo-V2.5-Pro）adapter——请求体适配、按模型配思考开关 |
-| `cc-kimi-bridge/`、`cc-qwen-bridge/` | 预留占位（adapter + README）                |
-| `cc-<name>-bridge/<name>.env.example` | 按上游的配置模板（GLM / DeepSeek / MiMo 已填；Kimi/Qwen 预留）  |
+| `glm-bridge/adapter.js`   | GLM（z.ai GLM-5.2）adapter——请求体适配、按模型配思考等级、模型上限表 |
+| `ds-bridge/adapter.js`    | DeepSeek（DeepSeek-V4）adapter——请求体适配、按模型配思考等级 |
+| `mimo-bridge/adapter.js`  | MiMo（小米 MiMo-V2.5-Pro）adapter——请求体适配、按模型配思考开关 |
+| `kimi-bridge/`、`qwen-bridge/` | 预留占位（adapter + README）                |
+| `<name>-bridge/<name>.env.example` | 按上游的配置模板（GLM / DeepSeek / MiMo 已填；Kimi/Qwen 预留）  |
 | `~/.cc-bridge/<upstream>.env` | 真实配置（你的，gitignored，绝不打包）        |
 
 ## 注意 / 限制
@@ -223,8 +223,8 @@ CC-BRIDGE 就是为扩展而设计的。新增一个上游（如 `kimi`）：
 本目录是**开发工作区**——你编辑、推送到 git 的源码。最终用户安装发布版的构建 tarball。流程：在此编辑 → 测试 → bump 版本 → 发布 → 安装使用。
 
 ```bash
-git clone <repo> && cd CC-BRIDGE
-node --check core/*.js bin/cc-bridge.js cc-glm-bridge/adapter.js   # 改完做语法检查
+git clone <repo> && cd CC-Bridge
+node --check core/*.js bin/cc-bridge.js glm-bridge/adapter.js   # 改完做语法检查
 cc-bridge glm start                                             # 从源码后台运行
 ```
 
@@ -238,8 +238,8 @@ cc-bridge glm start                                             # 从源码后�
 
 ## 版权与署名
 
-CC-BRIDGE 基于 **MIT 许可证** 开源——见 [LICENSE.md](LICENSE.md)。
+CC-Bridge 基于 **MIT 许可证** 开源——见 [LICENSE.md](LICENSE.md)。
 
 版权所有 (c) 2026 **All Contributors**。
 
-**署名方式：** 如果 CC-BRIDGE 对你有帮助，欢迎致谢（非强制）。请在任何副本或衍生项目中保留版权声明与许可证文件，并注明来源：https://github.com/xhqing/CC-BRIDGE。
+**署名方式：** 如果 CC-Bridge 对你有帮助，欢迎致谢（非强制）。请在任何副本或衍生项目中保留版权声明与许可证文件，并注明来源：https://github.com/xhqing/CC-Bridge。

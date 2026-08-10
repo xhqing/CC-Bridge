@@ -1,12 +1,12 @@
 'use strict';
 
 // 上游注册表 + adapter 加载器。
-// 每个上游（GLM / Kimi / Qwen …）在顶层 cc-<name>-bridge/ 目录下放一个 adapter.js，
-// 实现统一接口（见 cc-glm-bridge/adapter.js）。新增上游时：在此注册表加一行，
-// 并建对应的 cc-<name>-bridge/adapter.js。
+// 每个上游（GLM / Kimi / Qwen …）在顶层 <name>-bridge/ 目录下放一个 adapter.js，
+// 实现统一接口（见 glm-bridge/adapter.js）。新增上游时：在此注册表加一行，
+// 并建对应的 <name>-bridge/adapter.js。
 //
 // adapter 接口：
-//   name             上游标识（目录名 cc-<name>-bridge、配置文件 <name>.env 均由它派生）
+//   name             上游标识（目录名 <name>-bridge、配置文件 <name>.env 均由它派生）
 //   displayName      展示名（日志 / health 用）
 //   defaultTarget    默认 TARGET_MODEL（配置未填时兜底）
 //   defaultSpoof     默认 SPOOF_MODEL
@@ -18,14 +18,14 @@
 //                   注入）决定思考等级，this.thinkingDefault 为兜底
 
 const REGISTRY = {
-  glm: { dir: 'cc-glm-bridge', implemented: true },
-  kimi: { dir: 'cc-kimi-bridge', implemented: false },
-  qwen: { dir: 'cc-qwen-bridge', implemented: false },
-  mimo: { dir: 'cc-mimo-bridge', implemented: true },
-  ds: { dir: 'cc-ds-bridge', implemented: true },
+  glm: { dir: 'glm-bridge', implemented: true },
+  kimi: { dir: 'kimi-bridge', implemented: false },
+  qwen: { dir: 'qwen-bridge', implemented: false },
+  mimo: { dir: 'mimo-bridge', implemented: true },
+  ds: { dir: 'ds-bridge', implemented: true },
 };
 
-const DEFAULT_UPSTREAM = 'glm';
+const DEFAULT_UPSTREAM = 'ds';
 
 function listUpstreams() {
   return Object.keys(REGISTRY);
@@ -49,7 +49,7 @@ function loadAdapter(name) {
   if (!entry.implemented) {
     throw new Error(
       `upstream '${name}' is reserved but not implemented yet. ` +
-      `Create ${entry.dir}/adapter.js to add it (see cc-glm-bridge/adapter.js for the interface).`,
+      `Create ${entry.dir}/adapter.js to add it (see glm-bridge/adapter.js for the interface).`,
     );
   }
   // adapter 在顶层 <dir>/adapter.js，本文件在 core/，故 ../<dir>/adapter。

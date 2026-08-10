@@ -32,6 +32,9 @@ Thumbs.db
 *.swp
 *.swo
 
+# Claude Code per-project local config (never tracked)
+.claude/settings.local.json
+
 # Build output
 dist/
 build/

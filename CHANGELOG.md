@@ -2,6 +2,18 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### Changed
+
+- **安装 / update 后自动准备默认上游配置 `~/.cc-bridge/ds.env`**：新增 `scripts/ensure-default-env.js` 作为 package.json 的 `postinstall` 钩子（`"scripts"` 加入 `files` 随 tgz 发布）——第一次安装（`npm install -g <tgz>`）或 `cc-bridge update` / `rollback` 重新安装（内部同为 `npm install -g <tgz>`，均会触发）后，若 `~/.cc-bridge/ds.env` 不存在，自动从 `ds-bridge/ds.env.example` 复制一份（内容即模板副本），用户填好 API key 即可直接 `cc-bridge start`；已存在则静默跳过、绝不覆盖用户已有配置。脚本由 `DEFAULT_UPSTREAM` 驱动，默认上游变更时自动跟随。README 中英与 `.claude/rules/cc-bridge-install.md` 安装流程补说明。原因：新环境装完 CLI 即配置就位，省去「先 `cc-bridge ds config` 手动生成」一步。
+- **默认上游改为 ds（DeepSeek）**：`core/adapter.js` 的 `DEFAULT_UPSTREAM` 由 `glm` 改为 `ds`，`core/config.js` 的 `loadConfig` 兜底由硬编码 `'glm'` 改为引用 `DEFAULT_UPSTREAM`（保持单一来源）；同步更新 `bin/cc-bridge.js` / `core/server.js` 注释、README 中英（`<upstream>` 参数说明与用法示例）、`.claude/rules/cc-bridge-install.md` 与 `.claude/CLAUDE.md` 的默认上游表述。原因：用户日常主力模型为 DeepSeek，`cc-bridge start` / `restart` 等不带 `<upstream>` 的命令默认即指 `ds-bridge`，无需再显式写 `cc-bridge ds …`；显式 `cc-bridge glm …` 写法不受影响。
+- **项目更名 CC-BRIDGE → CC-Bridge**：GitHub 仓库 `xhqing/CC-BRIDGE` 重命名为 `xhqing/CC-Bridge`（公开仓库，旧 URL 自动重定向）；`core/update.js` 的 `REPO`、README（中英）徽章 URL 与署名来源、package.json description、4 个上游 README、`.claude/CLAUDE.md`、logo.svg 与 `assets/demo/` 全部 SVG 的展示名同步改为 CC-Bridge，并用 rsvg-convert 以 2x 重新渲染 6 张演示 PNG（旧版备份于 `tmp/png-backup/`）。原因：公开仓库面向英文读者，「Bridge」一眼可读为单词「桥」、语义更清晰；npm 包名 `cc-bridge` 与 CLI 命令不受影响。
+- **`.claude/rules/cc-bridge-install.md` 移除过时描述**：仓库已公开，「为 **private**、`curl` 匿名下载返回 404、必须用带认证的 `gh`」改为「为 **public**、`curl` 匿名下载与带认证的 `gh` 均可」。原因：仓库可见性已变更（2026-08-10 实测 public），规则描述随之更新，核心「从 Release 的 tgz 全局安装、禁 `npm link`」不变。
+- **`.claude/` 补齐项目级配置，接入 Anvil 负责制**：新增 `settings.json`（hooks 空）、`settings.local.json` 与 `settings.local.example.json`（允许 `Bash(node *)` / `Bash(npm *)` 白名单），`.gitignore` 追加 `.claude/settings.local.json`（本机配置不入库），`.claude/CLAUDE.md` 顶部新增「负责工程师：Anvil」一节。原因：让用户在只操作 CC-BRIDGE 项目时也能体现本项目归 Anvil（BackendEngineerAgent，用户的后端开发工程师）负责，`.claude/` 配置与 BackendEngineerAgent 项目对齐。
+- **`.claude/CLAUDE.md` 并入 Anvil 角色全文（内容超集首次落实）**：新增「## BackendEngineerAgent（Anvil）CLAUDE.md 全文（随附，保证内容超集）」章节，含 Anvil 角色定义 / 工作原则 / 工具 / 约束 / 子项目 `.claude/` 自动同步规则 / 位置，带指代说明（本文件中「本项目」指 BackendEngineerAgent），标题降级为 `###` 避免与本文档层级冲突。原因：按「Agent 项目与子项目 `.claude/` 超集关系」规则（2026-08-10 修订版），Agent 项目 `CLAUDE.md` 的**内容**同样须超集到子项目、实现方式不限——选最简单做法直接并入本文档；本次为首次落实的结构性变更故记录，后续内容更新同步按规则不逐条记录。
+- **桥目录名简化 `cc-<name>-bridge/` → `<name>-bridge/`**：5 个上游适配目录重命名（`cc-glm-bridge` → `glm-bridge`、`cc-ds-bridge` → `ds-bridge`、`cc-mimo-bridge` → `mimo-bridge`、`cc-kimi-bridge` → `kimi-bridge`、`cc-qwen-bridge` → `qwen-bridge`），同步 `core/adapter.js` 注册表 `dir` 字段、`package.json` `files` 数组、相关代码注释（`core/adapter.js` / `core/config.js` / `core/server.js` / `glm-bridge/adapter.js` / `ds-bridge/adapter.js`）、README 中英正文与 3 个桥 README（`ds-bridge` / `kimi-bridge` / `qwen-bridge` 的标题与路径引用）、`.claude/CLAUDE.md` 与 `.codebuddy/CLAUDE.md`。原因：目录名去掉与 CLI 命令 `cc-bridge` 重复的 `cc-` 前缀、与 `core/` 一起构成更清晰的顶层结构；上游标识（`glm` / `ds` / `mimo` / `kimi` / `qwen`）、CLI 命令（`cc-bridge <upstream> …`）、配置与模板路径（`~/.cc-bridge/<upstream>.env`、`<name>-bridge/<name>.env.example`）均不受影响，仅目录名简化。CHANGELOG 历史条目中的旧目录名保留原样（历史记录不改写）。
+
 ## [2.8.2] - 2026-08-06
 
 ### Docs

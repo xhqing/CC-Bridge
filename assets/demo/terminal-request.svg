@@ -47,7 +47,7 @@
 
   <text x="60" y="578" font-size="13" fill="#39c5cf">data: </text>
   <text x="112" y="578" font-size="13" fill="#e6edf3">{"type":"content_block_delta","index":0,"delta":{"type":"text_delta",</text>
-  <text x="112" y="600" font-size="13" fill="#e6edf3">"text":"你好！我是通过 CC-BRIDGE 桥接的 GLM-5.2，思考等级按配置为 <tspan fill="#d29922">max</tspan> 并与多 KEY 容灾联动。"}}</text>
+  <text x="112" y="600" font-size="13" fill="#e6edf3">"text":"你好！我是通过 CC-Bridge 桥接的 GLM-5.2，思考等级按配置为 <tspan fill="#d29922">max</tspan> 并与多 KEY 容灾联动。"}}</text>
 
   <text x="60" y="628" font-size="13" fill="#39c5cf">event: </text>
   <text x="114" y="628" font-size="13" fill="#e6edf3">message_delta</text>
@@ -61,5 +61,5 @@
   <text x="60" y="740" font-size="13" fill="#39c5cf">event: </text>
   <text x="114" y="740" font-size="13" fill="#e6edf3">message_stop</text>
 
-  <text x="40" y="772" font-size="12" fill="#484f58">请求链路依据 CC-BRIDGE 真实运行行为 · v2.8.1 · 时间戳/用量为演示值</text>
+  <text x="40" y="772" font-size="12" fill="#484f58">请求链路依据 CC-Bridge 真实运行行为 · v2.8.1 · 时间戳/用量为演示值</text>
 </svg>

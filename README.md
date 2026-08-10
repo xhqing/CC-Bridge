@@ -1,15 +1,15 @@
 <div align="center">
-  <img src="assets/logo.svg" alt="CC-BRIDGE" width="640">
+  <img src="assets/logo.svg" alt="CC-Bridge" width="640">
 </div>
 
-# CC-BRIDGE — Claude Code upstream bridge framework
+# CC-Bridge — Claude Code upstream bridge framework
 
 > [简体中文](README.zh-CN.md)
 
 <div align="center">
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
-![GitHub last commit](https://img.shields.io/github/last-commit/xhqing/CC-BRIDGE)
+![GitHub last commit](https://img.shields.io/github/last-commit/xhqing/CC-Bridge)
 ![Built with Claude Code](https://img.shields.io/badge/Built%20with-Claude%20Code-19C37D)
 ![Type: Project](https://img.shields.io/badge/Type-Project-lightgrey)
 
@@ -17,9 +17,9 @@
 
 A local transparent bridge that lets **Claude Code talk to third-party model
 upstreams** (GLM / Kimi / Qwen …) through a single local endpoint. Each upstream
-lives in its own adapter module under a `cc-<name>-bridge/` directory and shares the
+lives in its own adapter module under a `<name>-bridge/` directory and shares the
 same framework (`core/`). As a side effect of routing through a spoofed whitelist
-model, CC-BRIDGE **unlocks `/effort xhigh`** for non-first-party providers; it
+model, CC-Bridge **unlocks `/effort xhigh`** for non-first-party providers; it
 also supports **multiple API keys with automatic failover** and can **force a
 model to always run at `max` thinking effort**.
 
@@ -34,18 +34,18 @@ Install it once and start it from **any directory** with a single command:
 
 | upstream | status | adapter | target model |
 |----------|--------|---------|--------------|
-| `glm` | ✅ implemented | [cc-glm-bridge/](cc-glm-bridge/) | GLM-5.2 on z.ai |
-| `ds` | ✅ implemented | [cc-ds-bridge/](cc-ds-bridge/) | DeepSeek-V4 (pro / flash) |
-| `mimo` | ✅ implemented | [cc-mimo-bridge/](cc-mimo-bridge/) | MiMo-V2.5-Pro (Xiaomi) |
-| `kimi` | 🚧 reserved | [cc-kimi-bridge/](cc-kimi-bridge/) | — |
-| `qwen` | 🚧 reserved | [cc-qwen-bridge/](cc-qwen-bridge/) | — |
+| `glm` | ✅ implemented | [glm-bridge/](glm-bridge/) | GLM-5.2 on z.ai |
+| `ds` | ✅ implemented | [ds-bridge/](ds-bridge/) | DeepSeek-V4 (pro / flash) |
+| `mimo` | ✅ implemented | [mimo-bridge/](mimo-bridge/) | MiMo-V2.5-Pro (Xiaomi) |
+| `kimi` | 🚧 reserved | [kimi-bridge/](kimi-bridge/) | — |
+| `qwen` | 🚧 reserved | [qwen-bridge/](qwen-bridge/) | — |
 
 ## What it does
 
 - **Framework + per-upstream adapters.** All upstream-agnostic logic (HTTP
   server, multi-key failover, model rewriting, modelUsage injection, daemon) lives
   in [`core/`](core/). Each upstream's quirks (body adaptation, effort mapping,
-  model caps) live in its `cc-<name>-bridge/adapter.js`. Adding an upstream touches
+  model caps) live in its `<name>-bridge/adapter.js`. Adding an upstream touches
   only one new file + one registry line.
 - **Effort unlock.** Routing via a spoofed whitelist model ID bypasses Claude
   Code's client-side effort gate, so `/effort xhigh` works with third-party
@@ -76,7 +76,7 @@ Claude Code ──POST /v1/messages──▶  cc-bridge (127.0.0.1:8787)
                                     · inject modelUsage into the response
 ```
 
-The upstream is chosen by the `<upstream>` argument (default `glm`). The bridge
+The upstream is chosen by the `<upstream>` argument (default `ds`). The bridge
 loads `core/adapter.js` → the upstream's `adapter.js`, and applies that adapter's
 `adaptRequestBody` to every forwarded request.
 
@@ -106,8 +106,8 @@ back to the real target before it hits the upstream.
 
 ## Install
 
-CC-BRIDGE is distributed as a build tarball on GitHub Releases (the repo is
-private, so download with an authenticated `gh`):
+CC-Bridge is distributed as a build tarball on GitHub Releases (the repo is
+public, so download with `gh` or `curl`):
 
 ```bash
 gh release download v2.0.0 --pattern 'cc-bridge-2.0.0.tgz' --dir /tmp --clobber
@@ -118,7 +118,10 @@ npm install -g /tmp/cc-bridge-2.0.0.tgz
 > prefix once (`npm config set prefix ~/.local`, ensure `~/.local/bin` is on
 > PATH) and re-run without sudo.
 
-After install, `cc-bridge` is on your PATH from any directory.
+After install, `cc-bridge` is on your PATH from any directory. The install
+automatically prepares `~/.cc-bridge/ds.env` (a copy of `ds.env.example`) for
+the default upstream — fill in your API key and you're ready to
+`cc-bridge start`. If the file already exists, it is left untouched.
 
 ## Configure
 
@@ -159,7 +162,7 @@ PROXY_LOG=1                             # 0 to silence per-request logging
 ## Usage
 
 ```bash
-cc-bridge start           # default upstream (glm), background (detached)
+cc-bridge start           # default upstream (ds), background (detached)
 cc-bridge daemon          # alias for 'start' (background)
 cc-bridge claude [args]   # start bridge + launch claude pointed at it
 cc-bridge stop            # stop the background service
@@ -246,10 +249,10 @@ adapter).
 
 ## Adding a new upstream
 
-CC-BRIDGE is built to grow. To add an upstream (e.g. `kimi`):
+CC-Bridge is built to grow. To add an upstream (e.g. `kimi`):
 
-1. **Create the adapter** at `cc-kimi-bridge/adapter.js`, implementing the adapter
-   interface (see [cc-glm-bridge/adapter.js](cc-glm-bridge/adapter.js) and the comments
+1. **Create the adapter** at `kimi-bridge/adapter.js`, implementing the adapter
+   interface (see [glm-bridge/adapter.js](glm-bridge/adapter.js) and the comments
    in [core/adapter.js](core/adapter.js)):
    - `name`, `displayName`, `defaultTarget`, `defaultSpoof`
    - `defaultThinking` (default thinking level: `max` / `high` / `none`)
@@ -258,7 +261,7 @@ CC-BRIDGE is built to grow. To add an upstream (e.g. `kimi`):
      upstream; `ctx = { target }`
 2. **Register it** in [core/adapter.js](core/adapter.js): set `implemented: true`
    for `kimi`.
-3. **Document it** in `cc-kimi-bridge/README.md` and add a config template if needed.
+3. **Document it** in `kimi-bridge/README.md` and add a config template if needed.
 
 That's it — the framework, CLI, multi-key failover, and daemon all work
 unchanged. Users then run `cc-bridge kimi start`, edit `~/.cc-bridge/kimi.env`,
@@ -275,11 +278,11 @@ etc.
 | `core/daemon.js`         | background process management (per-upstream pid + log) |
 | `core/claude.js`         | start bridge + launch `claude` through it          |
 | `core/util.js`           | port cleanup / health probe / readiness wait       |
-| `cc-glm-bridge/adapter.js`  | GLM (z.ai GLM-5.2) adapter — body adaptation, per-model thinking, model caps |
-| `cc-ds-bridge/adapter.js`   | DeepSeek (DeepSeek-V4) adapter — body adaptation, per-model thinking |
-| `cc-mimo-bridge/adapter.js` | MiMo (Xiaomi MiMo-V2.5-Pro) adapter — body adaptation, per-model thinking switch |
-| `cc-kimi-bridge/`, `cc-qwen-bridge/` | reserved placeholders (adapter + README)    |
-| `cc-<name>-bridge/<name>.env.example` | per-upstream config template (GLM / DeepSeek / MiMo filled; Kimi/Qwen reserved) |
+| `glm-bridge/adapter.js`  | GLM (z.ai GLM-5.2) adapter — body adaptation, per-model thinking, model caps |
+| `ds-bridge/adapter.js`   | DeepSeek (DeepSeek-V4) adapter — body adaptation, per-model thinking |
+| `mimo-bridge/adapter.js` | MiMo (Xiaomi MiMo-V2.5-Pro) adapter — body adaptation, per-model thinking switch |
+| `kimi-bridge/`, `qwen-bridge/` | reserved placeholders (adapter + README)    |
+| `<name>-bridge/<name>.env.example` | per-upstream config template (GLM / DeepSeek / MiMo filled; Kimi/Qwen reserved) |
 | `~/.cc-bridge/<upstream>.env` | real config (yours, gitignored, never packaged) |
 
 ## Notes / caveats
@@ -312,8 +315,8 @@ git. End users install a published build tarball. The flow is: edit here → tes
 bump version → publish → install.
 
 ```bash
-git clone <repo> && cd CC-BRIDGE
-node --check core/*.js bin/cc-bridge.js cc-glm-bridge/adapter.js   # syntax check after edits
+git clone <repo> && cd CC-Bridge
+node --check core/*.js bin/cc-bridge.js glm-bridge/adapter.js   # syntax check after edits
 cc-bridge glm start                                             # run from source (background)
 ```
 
@@ -327,8 +330,8 @@ cc-bridge glm start                                             # run from sourc
 
 ## License & Attribution
 
-CC-BRIDGE is released under the **MIT License** — see [LICENSE.md](LICENSE.md).
+CC-Bridge is released under the **MIT License** — see [LICENSE.md](LICENSE.md).
 
 Copyright (c) 2026 **All Contributors**.
 
-**Attribution:** If you find CC-BRIDGE useful, an acknowledgement is appreciated (but not required). Please preserve the copyright notice and license file in any copy or derivative, and link back to the source: https://github.com/xhqing/CC-BRIDGE.
+**Attribution:** If you find CC-Bridge useful, an acknowledgement is appreciated (but not required). Please preserve the copyright notice and license file in any copy or derivative, and link back to the source: https://github.com/xhqing/CC-Bridge.

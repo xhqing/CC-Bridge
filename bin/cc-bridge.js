@@ -2,7 +2,7 @@
 'use strict';
 
 // cc-bridge — CLI entry point. Dispatches subcommands to core/* modules.
-// Usage: cc-bridge [upstream] <command> [args]. Upstream defaults to 'glm'.
+// Usage: cc-bridge [upstream] <command> [args]. Upstream defaults to 'ds'.
 
 const { loadConfig, validate, editConfig, showConfig, importConfig, configPathFor } = require('../core/config');
 const { startServer } = require('../core/server');
@@ -71,7 +71,7 @@ function parseGlobalConfig(argv) {
 }
 
 // Split the post-options argv into { upstream, cmd, sub }. If the first token is
-// a known upstream name (glm/kimi/qwen), treat it as the upstream selector;
+// a known upstream name (ds/glm/kimi/mimo/qwen), treat it as the upstream selector;
 // otherwise default upstream and treat the first token as the command.
 function parseUpstream(rest) {
   if (rest.length && isKnown(rest[0])) {
@@ -125,7 +125,7 @@ async function main() {
     case 'claude': {
       const { cfg, adapter } = loadOrThrow(upstream, cfgPath);
       let args = sub;
-      if (args[0] === '--') args = args.slice(1);   // allow `cc-bridge glm claude -- -p "hi"`
+      if (args[0] === '--') args = args.slice(1);   // allow `cc-bridge ds claude -- -p "hi"`
       runWithClaude(cfg, adapter, args);
       break;
     }

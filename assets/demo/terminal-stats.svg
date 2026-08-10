@@ -35,5 +35,5 @@
     <text x="60" y="432" fill="#3fb950"># 同一上游按 target 模型分账 —— 请求数 / 输入 / 缓存命中 / 命中率 / 输出，可观察 context caching 是否生效</text>
   </g>
 
-  <text x="40" y="462" font-size="12" fill="#484f58">取自真实运行输出 · CC-BRIDGE v2.8.1</text>
+  <text x="40" y="462" font-size="12" fill="#484f58">取自真实运行输出 · CC-Bridge v2.8.1</text>
 </svg>

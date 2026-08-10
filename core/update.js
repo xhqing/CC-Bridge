@@ -8,7 +8,7 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 
-const REPO = 'xhqing/CC-BRIDGE';
+const REPO = 'xhqing/CC-Bridge';
 const TGZ_PATTERN = /^cc-bridge-\d+\.\d+\.\d+\.tgz$/;
 
 // Semver-ish comparison: compares arrays of numeric segments [major, minor, patch].

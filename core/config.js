@@ -9,7 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const { REGISTRY } = require('./adapter');
+const { REGISTRY, DEFAULT_UPSTREAM } = require('./adapter');
 
 const DIR = path.join(os.homedir(), '.cc-bridge');
 
@@ -24,7 +24,7 @@ const logPathFor = (upstream) => path.join(DIR, `${upstream}.log`);
 const statsPathFor = (upstream, configPath) =>
   path.join(path.dirname(configPath || configPathFor(upstream)), `stats-${upstream}.json`);
 
-// 每上游的配置模板：cc-<name>-bridge/<name>.env.example（随包发布，按上游区分）。上游未
+// 每上游的配置模板：<name>-bridge/<name>.env.example（随包发布，按上游区分）。上游未
 // 注册时返回 null。`cc-bridge <upstream> config` 首次生成配置时复制的就是它。
 const templatePath = (upstream) => {
   const entry = REGISTRY[upstream];
@@ -163,7 +163,7 @@ function resolveConfigPath(upstream, override) {
 // Load and normalise config for an upstream. process.env wins over the .env file.
 // Never throws on missing fields — callers use validate() to check required ones.
 function loadConfig(opts = {}) {
-  const upstream = opts.upstream || 'glm';
+  const upstream = opts.upstream || DEFAULT_UPSTREAM;
   const file = resolveConfigPath(upstream, opts.configPath);
   const env = parseEnv(file);
   const get = (k, d) => {
@@ -242,7 +242,7 @@ function validate(cfg) {
 }
 
 // Create ~/.cc-bridge/<upstream>.env from the upstream's bundled <upstream>.env.example if absent.
-// 模板按上游区分：cc-<name>-bridge/<name>.env.example（找不到则写一行占位注释）。
+// 模板按上游区分：<name>-bridge/<name>.env.example（找不到则写一行占位注释）。
 function ensureConfig(upstream) {
   ensureDir();
   const CONFIG = configPathFor(upstream);

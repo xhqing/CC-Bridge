@@ -1,6 +1,6 @@
-# CC-MIMO-BRIDGE — Claude Code ↔ MiMo (小米) 适配器
+# MIMO-BRIDGE — Claude Code ↔ MiMo (小米) 适配器
 
-CC-BRIDGE 框架的 MiMo 上游适配器，对接小米 [MiMo](https://platform.xiaomimimo.com) 的 MiMo-V2.5-Pro 模型。
+CC-Bridge 框架的 MiMo 上游适配器，对接小米 [MiMo](https://platform.xiaomimimo.com) 的 MiMo-V2.5-Pro 模型。
 
 ## 它做什么
 

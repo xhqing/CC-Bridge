@@ -1,14 +1,14 @@
 'use strict';
 
 /**
- * CC-BRIDGE — Claude Code 上游桥接框架（公共服务器）。
+ * CC-Bridge — Claude Code 上游桥接框架（公共服务器）。
  *
  * 本文件是与上游无关的公共框架：接收 Claude Code 的 /v1/messages 请求，按当前
  * adapter 做请求体适配，按 MODEL_MAP（spoof→target 多对）把 body.model 改写为真实
  * 模型，转发到上游；响应原样回传（注入 modelUsage 让 webview 显示真实窗口）。
  *
  * 上游专属逻辑（GLM 的 thinking 归一化、reasoning_effort、请求体清洗等）由对应
- * adapter 提供（见 cc-glm-bridge/adapter.js），框架层通过 adapter.adaptRequestBody 调用。
+ * adapter 提供（见 glm-bridge/adapter.js），框架层通过 adapter.adaptRequestBody 调用。
  *
  * 多 KEY 容灾：API_KEY 支持逗号分隔多个，某 KEY 返回 401/403（失效/欠费）时熔断
  * 并切换下一个 KEY；瞬态错误先同 KEY 重试、用尽再换 KEY。
@@ -742,7 +742,7 @@ function startServer(cfg, adapter) {
 }
 
 // Allow `node core/server.js` (used by daemon/claude spawn). Upstream comes from
-// $CC_BRIDGE_UPSTREAM (default glm). Loads config from $CC_BRIDGE_CONFIG or the
+// $CC_BRIDGE_UPSTREAM (default ds). Loads config from $CC_BRIDGE_CONFIG or the
 // per-upstream default, validates, then starts.
 if (require.main === module) {
   const { DEFAULT_UPSTREAM, loadAdapter } = require('./adapter');

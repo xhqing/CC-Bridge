@@ -1,6 +1,6 @@
-# CC-DS-BRIDGE — Claude Code ↔ DeepSeek-V4 适配器
+# DS-BRIDGE — Claude Code ↔ DeepSeek-V4 适配器
 
-CC-BRIDGE 框架的 DeepSeek 上游适配器，对接 [DeepSeek](https://api-docs.deepseek.com) 的 DeepSeek-V4 系列（`deepseek-v4-pro` / `deepseek-v4-flash`）。adapter 直接透传 Anthropic 格式请求到 DeepSeek 官方 Anthropic 兼容端点（`/anthropic`，即 `API_BASE=https://api.deepseek.com/anthropic`），只需做 DeepSeek 专属的清洗与思考等级适配。
+CC-Bridge 框架的 DeepSeek 上游适配器，对接 [DeepSeek](https://api-docs.deepseek.com) 的 DeepSeek-V4 系列（`deepseek-v4-pro` / `deepseek-v4-flash`）。adapter 直接透传 Anthropic 格式请求到 DeepSeek 官方 Anthropic 兼容端点（`/anthropic`，即 `API_BASE=https://api.deepseek.com/anthropic`），只需做 DeepSeek 专属的清洗与思考等级适配。
 
 > 早期曾因 `/anthropic` 端点并发 `tool_use` 400 临时改走 OpenAI 端点（`/chat/completions` + 格式转换，2.7.6~2.7.9）。2026-08 实测并发 `tool_use` 已放行（历史含双 `tool_use`、模型并行输出两个方向均 200），故切回直传路径——DeepSeek 隐式 Context Caching 按「完整前缀单元」匹配，直传时 system / tools / 会话历史前缀稳定，缓存命中率恢复 ~98%。
 
@@ -17,7 +17,7 @@ CC-BRIDGE 框架的 DeepSeek 上游适配器，对接 [DeepSeek](https://api-doc
 | `deepseek-v4-pro` | 1M | 128K | 主力模型，思考默认开启（Think Max） |
 | `deepseek-v4-flash` | 1M | 128K | 轻量快速模型 |
 
-> DeepSeek-V4 上下文窗口 1M、单次输出能力充裕（官方未公布精确输出上限，第三方实测 flash 可达 384K）。上表「钳制 max_tokens」是 adapter 为避免偶发超大 `max_tokens` 触发上游拒收而设的保守保护值，不限制正常输出；需要更大输出可改 `cc-ds-bridge/adapter.js` 的 `MODEL_MAX_TOKENS`。
+> DeepSeek-V4 上下文窗口 1M、单次输出能力充裕（官方未公布精确输出上限，第三方实测 flash 可达 384K）。上表「钳制 max_tokens」是 adapter 为避免偶发超大 `max_tokens` 触发上游拒收而设的保守保护值，不限制正常输出；需要更大输出可改 `ds-bridge/adapter.js` 的 `MODEL_MAX_TOKENS`。
 >
 > 旧模型名 `deepseek-chat` / `deepseek-reasoner` 已于 2026/07/24 弃用（分别对应 `deepseek-v4-flash` 的非思考 / 思考模式），本适配器只使用 V4 新名。
 

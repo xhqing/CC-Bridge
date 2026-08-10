@@ -1,7 +1,7 @@
 {
   "name": "cc-bridge",
   "version": "2.8.2",
-  "description": "CC-BRIDGE — Claude Code upstream bridge framework (GLM / DeepSeek / MiMo / Kimi / Qwen …). Routes Claude Code to third-party models via spoofed whitelist IDs, unlocks /effort xhigh, and fails over across multiple API keys. GLM / DeepSeek / MiMo adapters included.",
+  "description": "CC-Bridge — Claude Code upstream bridge framework (GLM / DeepSeek / MiMo / Kimi / Qwen …). Routes Claude Code to third-party models via spoofed whitelist IDs, unlocks /effort xhigh, and fails over across multiple API keys. GLM / DeepSeek / MiMo adapters included.",
   "private": true,
   "bin": {
     "cc-bridge": "bin/cc-bridge.js"
@@ -9,11 +9,12 @@
   "files": [
     "bin",
     "core",
-    "cc-glm-bridge",
-    "cc-kimi-bridge",
-    "cc-qwen-bridge",
-    "cc-mimo-bridge",
-    "cc-ds-bridge",
+    "scripts",
+    "glm-bridge",
+    "kimi-bridge",
+    "qwen-bridge",
+    "mimo-bridge",
+    "ds-bridge",
     "README.md",
     "README.zh-CN.md",
     "VERSION",
@@ -21,6 +22,9 @@
   ],
   "engines": {
     "node": ">=14"
+  },
+  "scripts": {
+    "postinstall": "node scripts/ensure-default-env.js"
   },
   "keywords": [
     "claude-code",
