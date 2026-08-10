@@ -18,10 +18,12 @@
 A local transparent bridge that lets **Claude Code talk to third-party model
 upstreams** (GLM / Kimi / Qwen …) through a single local endpoint. Each upstream
 lives in its own adapter module under a `<name>-bridge/` directory and shares the
-same framework (`core/`). As a side effect of routing through a spoofed whitelist
-model, CC-Bridge **unlocks `/effort xhigh`** for non-first-party providers; it
-also supports **multiple API keys with automatic failover** and can **force a
-model to always run at `max` thinking effort**.
+same framework (`core/`). **Thinking levels are configured directly in cc-bridge's
+config file** (`MODEL_THINKING`, see
+[Per-model thinking level](#per-model-thinking-level-glm--deepseek)) — Claude
+Code's `/effort` has **no effect on the upstream model's actual thinking level**,
+whichever tier you pick. It also supports **multiple API keys with automatic
+failover**.
 
 > **Currently implemented:** `glm` (z.ai GLM-5.2), `ds` (DeepSeek-V4), `mimo`
 > (Xiaomi MiMo). `kimi` / `qwen` are reserved placeholders — see
@@ -44,12 +46,16 @@ Install it once and start it from **any directory** with a single command:
 
 - **Framework + per-upstream adapters.** All upstream-agnostic logic (HTTP
   server, multi-key failover, model rewriting, modelUsage injection, daemon) lives
-  in [`core/`](core/). Each upstream's quirks (body adaptation, effort mapping,
-  model caps) live in its `<name>-bridge/adapter.js`. Adding an upstream touches
-  only one new file + one registry line.
-- **Effort unlock.** Routing via a spoofed whitelist model ID bypasses Claude
-  Code's client-side effort gate, so `/effort xhigh` works with third-party
-  providers. (See [The effort gate](#the-effort-gate-xhigh-vs-max).)
+  in [`core/`](core/). Each upstream's quirks (body adaptation, thinking-level
+  mapping, model caps) live in its `<name>-bridge/adapter.js`. Adding an upstream
+  touches only one new file + one registry line.
+- **Thinking level configured per model.** Each target model gets a pinned
+  thinking level via `MODEL_THINKING` in `~/.cc-bridge/<upstream>.env` (e.g.
+  `max` / `high` / `none`; models not listed fall back to
+  `MODEL_THINKING_DEFAULT`, default `max`). The level is decided by the bridge
+  config — **Claude Code's `/effort` has no effect on the upstream model's
+  actual thinking level**, whichever tier you pick. (See
+  [Per-model thinking level](#per-model-thinking-level-glm--deepseek).)
 - **Multi-key failover.** Configure multiple keys as numbered variables
   (`API_KEY_1=…`, `API_KEY_2=…`, … — one per line, so each can carry its own
   comment and be disabled by commenting out the line; legacy comma-separated
@@ -58,8 +64,6 @@ Install it once and start it from **any directory** with a single command:
   the next key. Transient errors (`429`/`5xx`/network) are first retried on the
   same key, then fall over. The URL never changes — only the key rotates. (See
   [Multi-key failover](#multi-key-failover).)
-- **Always-max thinking (GLM).** The GLM adapter forces `reasoning_effort = max`
-  on every request, regardless of the client's `/effort` tier.
 - **Per-upstream isolation.** Each upstream has its own config
   (`~/.cc-bridge/<upstream>.env`), pid file, and log file, so several upstreams
   can run as daemons side by side (use different `PROXY_PORT`s).
@@ -79,23 +83,6 @@ Claude Code ──POST /v1/messages──▶  cc-bridge (127.0.0.1:8787)
 The upstream is chosen by the `<upstream>` argument (default `ds`). The bridge
 loads `core/adapter.js` → the upstream's `adapter.js`, and applies that adapter's
 `adaptRequestBody` to every forwarded request.
-
-## The effort gate (xhigh vs max)
-
-> ⚠️ **Always use `/effort xhigh`, never `/effort max`.** In the current VS Code
-> extension, `max` is **not usable** — it's absent from the extension's
-> `effortLevel` enum and is silently coerced back to `high`, so the model never
-> actually runs at `max`. To pin the thinking tier at the maximum, use
-> `/effort xhigh` uniformly in **both** the CLI and the VS Code extension.
-> `xhigh` is the highest tier the VS Code extension supports and is accepted by
-> both.
-
-Claude Code gates `max`/`xhigh` behind a **client-side** check: the active model
-ID must be on a Claude whitelist (`claude-opus-4-8`, …) **or** the provider must
-be first-party / Bedrock / Foundry. A third-party gateway fails both, so
-`/effort max` silently falls back to `high`. Routing through this bridge with a
-spoofed whitelist ID satisfies the check; the bridge then rewrites `body.model`
-back to the real target before it hits the upstream.
 
 ## Prerequisites
 
@@ -204,13 +191,20 @@ won't use it automatically. Pick one:
   block of `~/.claude/settings.json`. (`claude` then only works while the bridge
   is running.)
 
-Inside `claude`, run `/effort` and pick `xhigh` (**not** `max` — see the warning
-above). The bridge logs each request, including the key in use:
+Configure the thinking level in `MODEL_THINKING` in
+`~/.cc-bridge/<upstream>.env` (see
+[Per-model thinking level](#per-model-thinking-level-glm--deepseek)) — you do
+**not** need to set `/effort` inside `claude`; whichever tier you pick, it has
+no effect on the upstream model's actual thinking level. The bridge logs each
+request, including the key in use:
 
 ```
 [bridge 2026-07-24T03:00:00.000Z] POST /v1/messages  model=claude-opus-4-8 → glm-5.2  effort=xhigh  stream=true  key=#1/2
 [bridge …]   ← 200  812ms  ct=text/event-stream  key=#1
 ```
+
+(The `effort` field in the log merely records the tier the client sent, for
+diagnostics — the actual thinking level is pinned by `MODEL_THINKING`.)
 
 ## Multi-key failover
 
@@ -246,9 +240,10 @@ GLM); DeepSeek's `/anthropic` endpoint does not accept `none` in
 use only `max` / `high` there. On every request the adapter looks up the target
 model's level and writes it to three fields in concert — `thinking.type`
 (`enabled`/`disabled`), `reasoning_effort`, and `output_config.effort` — so
-the level holds regardless of the client's `/effort` tier. Models not listed
-fall back to `MODEL_THINKING_DEFAULT` (default `max`, set by `defaultThinking`
-in the adapter).
+the level is pinned: Claude Code's `/effort` has no effect on the upstream
+model's actual thinking level. Models not listed fall back to
+`MODEL_THINKING_DEFAULT` (default `max`, set by `defaultThinking` in the
+adapter).
 
 ## Adding a new upstream
 
@@ -290,20 +285,17 @@ etc.
 
 ## Notes / caveats
 
-- **`xhigh` is required; `max` is broken in the VS Code extension.** The VS Code
-  extension (≥2.1.187) validates `effortLevel` against
-  `["low","medium","high","xhigh"]` — `max` is not in the enum and is silently
-  coerced to `undefined` (→ falls back to `high`). `xhigh` is accepted by both.
 - The upstream must accept `output_config.effort` / `reasoning_effort` for the
-  effort unlock (and force-max) to take effect.
+  `MODEL_THINKING` level configured to take effect.
 - Only `POST /v1/messages` (excluding `/v1/messages/count_tokens`) gets its
   `model` rewritten. Other paths (`/v1/models`, …) are forwarded unchanged.
 - **Unknown models are rejected with HTTP 400, not silently rewritten.**
 - `package.json` `files` excludes `.env`; real keys are never packaged into the
   global install.
-- Effort unlock only defeats the **client-side** effort gate. It does not change
-  what the model actually does with the effort parameter — that is up to the
-  upstream.
+- The thinking level is pinned by the bridge from `MODEL_THINKING` config and
+  written into the request body; Claude Code's `/effort` has no effect on the
+  upstream model's actual thinking level. What the model actually does with the
+  thinking parameter is up to the upstream.
 
 ## Versioning
 

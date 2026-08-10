@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [2.8.2] - 2026-08-10
+
 ### Fixed
 
 - **修复中文会话标题被生成为韩语（会话标题提示词语言示例修正）**：Claude Code 客户端（2.1.226 实测）内嵌的会话标题生成提示词只有英语示例 + 一条「Good (Korean session)」韩语示例、没有中文示例——中文会话生成标题时，模型（DeepSeek 实测）容易照抄韩语示例、输出韩语标题。`core/server.js` 新增 `fixTitlePromptLanguage`：请求体解析后递归遍历文本节点，命中标题提示词特征（`Good (Korean session)`，只出现在该提示词里）时，把韩语示例替换为中文示例（`Good (Chinese session): {"title": "重构支付模块"}`）、`Bad (English title for a Korean session)` 语言标签同步改为 Chinese；未命中（非标题请求）一律原样不动。原因：标题提示词在客户端 native binary 内、CC-Bridge 无法直接改客户端，在桥接层改写请求体是唯一可行修法；特征命中即替换、零副作用，客户端将来改动提示词措辞导致特征失效时静默跳过即可。实测：用从 binary 提取的真实提示词构造请求经桥接转发，改写后请求体韩语示例已替换为中文示例、上游 200 接受。
@@ -11,6 +13,7 @@
 
 ### Changed
 
+- **对外表述移除「unlocks /effort xhigh」，改为「思考等级配置文件配置」**：用户决定思考等级只在 cc-bridge 配置文件中配置（`MODEL_THINKING` / `MODEL_THINKING_DEFAULT`），不再使用 Claude Code 的 `/effort` 功能——`/effort` 选任何等级都不影响实际上游模型的思考等级（思考等级由桥接按配置写入请求体钉死），继续宣传「解锁 xhigh」是误导性卖点。改了什么：README 中英——intro 特性改为「思考等级直接在 cc-bridge 配置文件中配置」、架构说明「effort 映射」改「思考等级映射」、删除「effort 闸门（xhigh 与 max）」整节与「始终 max 思考（GLM）」特性条目、快速开始「在 claude 里运行 /effort 选 xhigh」步骤改为「在 `~/.cc-bridge/<upstream>.env` 配 `MODEL_THINKING`」（日志示例加注：`effort` 字段仅记录客户端传来的档位、实际等级由配置钉死）、注意/限制删除「必须用 xhigh / max 在 VS Code 插件里是坏的」条目、「effort 解锁」表述改为「配置钉死」表述；package.json description 删除「unlocks /effort xhigh」（改为 pins per-model thinking levels via config）、keyword `effort` 改 `thinking`；core/claude.js 启动文案「max/xhigh unlocked」改「thinking levels from cc-bridge config」；kimi/qwen 预留模板注释「绕过客户端 effort 闸门」改「Claude Code 只接受白名单内的模型 ID」、「是否需要强制 max effort」改「MODEL_THINKING 思考等级」；`.claude/CLAUDE.md` 架构说明同步。原因：思考等级已由桥接配置钉死、客户端 `/effort` 档位对上游无实际作用，对外统一「配置文件配置思考等级」的表述。历史 CHANGELOG 条目中的旧表述保留原样（历史记录不改写）。
 - **安装 / update 后自动准备默认上游配置 `~/.cc-bridge/ds.env`**：新增 `scripts/ensure-default-env.js` 作为 package.json 的 `postinstall` 钩子（`"scripts"` 加入 `files` 随 tgz 发布）——第一次安装（`npm install -g <tgz>`）或 `cc-bridge update` / `rollback` 重新安装（内部同为 `npm install -g <tgz>`，均会触发）后，若 `~/.cc-bridge/ds.env` 不存在，自动从 `ds-bridge/ds.env.example` 复制一份（内容即模板副本），用户填好 API key 即可直接 `cc-bridge start`；已存在则静默跳过、绝不覆盖用户已有配置。脚本由 `DEFAULT_UPSTREAM` 驱动，默认上游变更时自动跟随。README 中英与 `.claude/rules/cc-bridge-install.md` 安装流程补说明。原因：新环境装完 CLI 即配置就位，省去「先 `cc-bridge ds config` 手动生成」一步。
 - **默认上游改为 ds（DeepSeek）**：`core/adapter.js` 的 `DEFAULT_UPSTREAM` 由 `glm` 改为 `ds`，`core/config.js` 的 `loadConfig` 兜底由硬编码 `'glm'` 改为引用 `DEFAULT_UPSTREAM`（保持单一来源）；同步更新 `bin/cc-bridge.js` / `core/server.js` 注释、README 中英（`<upstream>` 参数说明与用法示例）、`.claude/rules/cc-bridge-install.md` 与 `.claude/CLAUDE.md` 的默认上游表述。原因：用户日常主力模型为 DeepSeek，`cc-bridge start` / `restart` 等不带 `<upstream>` 的命令默认即指 `ds-bridge`，无需再显式写 `cc-bridge ds …`；显式 `cc-bridge glm …` 写法不受影响。
 - **项目更名 CC-BRIDGE → CC-Bridge**：GitHub 仓库 `xhqing/CC-BRIDGE` 重命名为 `xhqing/CC-Bridge`（公开仓库，旧 URL 自动重定向）；`core/update.js` 的 `REPO`、README（中英）徽章 URL 与署名来源、package.json description、4 个上游 README、`.claude/CLAUDE.md`、logo.svg 与 `assets/demo/` 全部 SVG 的展示名同步改为 CC-Bridge，并用 rsvg-convert 以 2x 重新渲染 6 张演示 PNG（旧版备份于 `tmp/png-backup/`）。原因：公开仓库面向英文读者，「Bridge」一眼可读为单词「桥」、语义更清晰；npm 包名 `cc-bridge` 与 CLI 命令不受影响。
@@ -18,8 +21,6 @@
 - **`.claude/` 补齐项目级配置，接入 Anvil 负责制**：新增 `settings.json`（hooks 空）、`settings.local.json` 与 `settings.local.example.json`（允许 `Bash(node *)` / `Bash(npm *)` 白名单），`.gitignore` 追加 `.claude/settings.local.json`（本机配置不入库），`.claude/CLAUDE.md` 顶部新增「负责工程师：Anvil」一节。原因：让用户在只操作 CC-BRIDGE 项目时也能体现本项目归 Anvil（BackendEngineerAgent，用户的后端开发工程师）负责，`.claude/` 配置与 BackendEngineerAgent 项目对齐。
 - **`.claude/CLAUDE.md` 并入 Anvil 角色全文（内容超集首次落实）**：新增「## BackendEngineerAgent（Anvil）CLAUDE.md 全文（随附，保证内容超集）」章节，含 Anvil 角色定义 / 工作原则 / 工具 / 约束 / 子项目 `.claude/` 自动同步规则 / 位置，带指代说明（本文件中「本项目」指 BackendEngineerAgent），标题降级为 `###` 避免与本文档层级冲突。原因：按「Agent 项目与子项目 `.claude/` 超集关系」规则（2026-08-10 修订版），Agent 项目 `CLAUDE.md` 的**内容**同样须超集到子项目、实现方式不限——选最简单做法直接并入本文档；本次为首次落实的结构性变更故记录，后续内容更新同步按规则不逐条记录。
 - **桥目录名简化 `cc-<name>-bridge/` → `<name>-bridge/`**：5 个上游适配目录重命名（`cc-glm-bridge` → `glm-bridge`、`cc-ds-bridge` → `ds-bridge`、`cc-mimo-bridge` → `mimo-bridge`、`cc-kimi-bridge` → `kimi-bridge`、`cc-qwen-bridge` → `qwen-bridge`），同步 `core/adapter.js` 注册表 `dir` 字段、`package.json` `files` 数组、相关代码注释（`core/adapter.js` / `core/config.js` / `core/server.js` / `glm-bridge/adapter.js` / `ds-bridge/adapter.js`）、README 中英正文与 3 个桥 README（`ds-bridge` / `kimi-bridge` / `qwen-bridge` 的标题与路径引用）、`.claude/CLAUDE.md` 与 `.codebuddy/CLAUDE.md`。原因：目录名去掉与 CLI 命令 `cc-bridge` 重复的 `cc-` 前缀、与 `core/` 一起构成更清晰的顶层结构；上游标识（`glm` / `ds` / `mimo` / `kimi` / `qwen`）、CLI 命令（`cc-bridge <upstream> …`）、配置与模板路径（`~/.cc-bridge/<upstream>.env`、`<name>-bridge/<name>.env.example`）均不受影响，仅目录名简化。CHANGELOG 历史条目中的旧目录名保留原样（历史记录不改写）。
-
-## [2.8.2] - 2026-08-06
 
 ### Docs
 

@@ -1,8 +1,8 @@
 'use strict';
 
 // `cc-bridge <upstream> claude` — start the bridge as a child, point an ephemeral
-// `claude` process at it (max/xhigh unlocked), and tear the bridge down when
-// claude exits.
+// `claude` process at it (thinking levels come from the bridge config), and tear
+// the bridge down when claude exits.
 
 const fs = require('fs');
 const path = require('path');
@@ -56,7 +56,7 @@ function runWithClaude(cfg, adapter, args) {
     delete env.ANTHROPIC_AUTH_TOKEN;
 
     console.log('');
-    console.log('  \x1b[32m✅  claude will use this bridge (max/xhigh unlocked)\x1b[0m');
+    console.log('  \x1b[32m✅  claude will use this bridge (thinking levels from cc-bridge config)\x1b[0m');
     console.log(`  \x1b[32m    BASE_URL : ${env.ANTHROPIC_BASE_URL}\x1b[0m`);
     console.log(`  \x1b[32m    MODEL    : ${env.ANTHROPIC_MODEL}  → ${cfg.TARGET_MODEL || adapter.defaultTarget}\x1b[0m`);
     console.log('');

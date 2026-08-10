@@ -15,7 +15,7 @@
 
 </div>
 
-一个本地透明桥接框架，让 **Claude Code 访问第三方模型上游**（GLM / Kimi / Qwen ……）。每个上游在独立的 `<name>-bridge/` 目录下有一个 adapter 模块，共享同一套框架（`core/`）。作为白名单伪模型中转的附带效果，CC-Bridge 为非官方 provider **解锁 `/effort xhigh`**；同时支持**多 API_KEY 容灾**，并能**强制模型始终以 `max` 思考等级运行**。
+一个本地透明桥接框架，让 **Claude Code 访问第三方模型上游**（GLM / Kimi / Qwen ……）。每个上游在独立的 `<name>-bridge/` 目录下有一个 adapter 模块，共享同一套框架（`core/`）。**思考等级直接在 cc-bridge 的配置文件中配置**（`MODEL_THINKING`，见[按模型配思考等级](#按模型配思考等级glm--deepseek)）——Claude Code 的 `/effort` 选任何等级都不影响实际上游模型的思考等级；同时支持**多 API_KEY 容灾**。
 
 > **当前已实现：** `glm`（z.ai GLM-5.2）、`ds`（DeepSeek-V4）、`mimo`（小米 MiMo）。`kimi` / `qwen` 为预留占位——见[添加新上游](#添加新上游)。
 
@@ -33,10 +33,9 @@
 
 ## 它能做什么
 
-- **框架 + 按上游分 adapter。** 所有与上游无关的通用逻辑（HTTP 服务、多 KEY 容灾、model 改写、modelUsage 注入、daemon）都在 [`core/`](core/)；每个上游的专属逻辑（请求体适配、effort 映射、模型上限表）在各自的 `<name>-bridge/adapter.js`。新增上游只需加一个文件 + 注册表一行。
-- **解锁 effort。** 通过白名单伪模型 ID 中转，绕过 Claude Code 客户端的 effort 闸门，让第三方上游也能用 `/effort xhigh`。（见[effort 闸门（xhigh 与 max）](#effort-闸门xhigh-与-max)。）
+- **框架 + 按上游分 adapter。** 所有与上游无关的通用逻辑（HTTP 服务、多 KEY 容灾、model 改写、modelUsage 注入、daemon）都在 [`core/`](core/)；每个上游的专属逻辑（请求体适配、思考等级映射、模型上限表）在各自的 `<name>-bridge/adapter.js`。新增上游只需加一个文件 + 注册表一行。
+- **思考等级配置文件配置。** 每个 target 模型通过 `~/.cc-bridge/<upstream>.env` 里的 `MODEL_THINKING` 钉死一个思考等级（如 `max` / `high` / `none`，未列出的模型走 `MODEL_THINKING_DEFAULT`，默认 `max`）。思考等级由桥接配置决定，**Claude Code 的 `/effort` 选任何等级都不影响实际上游模型的思考等级**。（见[按模型配思考等级](#按模型配思考等级glm--deepseek)。）
 - **多 KEY 容灾。** 把多个 KEY 各自成行配成编号变量（`API_KEY_1=…`、`API_KEY_2=…`…，每行一个，方便单独注释账号来源、或整行注释掉禁用某 KEY；旧式逗号分隔 `API_KEY=k1,k2` 仍兼容）。某 KEY 返回 `401`/`403`（被拒 / 额度用尽）时，桥把它熔断 60 秒并立即切换下一个 KEY；瞬态错误（`429`/`5xx`/网络）先在同 KEY 重试、用尽再换。URL 始终不变，只轮换 KEY。（见[多 KEY 容灾](#多-key-容灾)。）
-- **始终 max 思考（GLM）。** GLM adapter 在每条请求上强制 `reasoning_effort = max`，不受客户端 `/effort` 档位影响。
 - **按上游隔离。** 每个上游有独立配置（`~/.cc-bridge/<upstream>.env`）、pid 文件、日志文件，多个上游可作为 daemon 并存（用不同 `PROXY_PORT`）。
 - **零运行时依赖。** 仅用 Node ≥ 14 内置模块。
 
@@ -52,12 +51,6 @@ Claude Code ──POST /v1/messages──▶  cc-bridge (127.0.0.1:8787)
 ```
 
 上游由 `<upstream>` 参数选定（默认 `ds`）。桥加载 `core/adapter.js` → 对应上游的 `adapter.js`，对每条转发的请求应用该 adapter 的 `adaptRequestBody`。
-
-## effort 闸门（xhigh 与 max）
-
-> ⚠️ **一律使用 `/effort xhigh`，绝不使用 `/effort max`。** 当前版本的 VS Code 插件里 `max` **完全不可用**——它不在插件的 `effortLevel` 枚举里，会被静默强制回 `high`，模型实际不会以 `max` 运行。要让思考等级稳定保持在最高档，请在 **CLI 和 VS Code 插件** 两边统一使用 `/effort xhigh`。`xhigh` 是 VS Code 插件支持的最高档位，CLI 和插件都接受。
-
-Claude Code 把 `max`/`xhigh` 两档 effort 卡在**客户端**检查上：当前模型 ID 必须在 Claude 白名单里，**或者** provider 必须是官方 / Bedrock / Foundry。第三方网关两条都不满足，于是 `/effort max` 静默回落到 `high`。通过本桥用白名单伪模型 ID 中转就能通过检查；桥随后在请求发往上游之前把 `body.model` 改写回真实模型。
 
 ## 前置条件
 
@@ -147,12 +140,14 @@ cc-bridge claude -- -p "hello"   # 也接受 "--" 分隔符
   （桥接会轮换自己配置的 KEY；这里的 `ANTHROPIC_API_KEY` 只需非空，让 claude CLI 肯发请求。）
 - **持久：** 在 `~/.claude/settings.json` 的 `env` 块里设置 `ANTHROPIC_BASE_URL` 和 `ANTHROPIC_MODEL`。（此时 `claude` 只在桥接运行时才能用。）
 
-在 `claude` 里运行 `/effort` 并选 `xhigh`（**不要**选 `max`——见上方警告）。桥接会记录每个请求，包括当前用的 KEY：
+思考等级在 `~/.cc-bridge/<upstream>.env` 的 `MODEL_THINKING` 里配置（见[按模型配思考等级](#按模型配思考等级glm--deepseek)）——不需要在 `claude` 里设置 `/effort`，`/effort` 选任何等级都不影响实际上游模型的思考等级。桥接会记录每个请求，包括当前用的 KEY：
 
 ```
 [bridge 2026-07-24T03:00:00.000Z] POST /v1/messages  model=claude-opus-4-8 → glm-5.2  effort=xhigh  stream=true  key=#1/2
 [bridge …]   ← 200  812ms  ct=text/event-stream  key=#1
 ```
+
+（日志里的 `effort` 字段只记录客户端传来的档位、仅供诊断——实际思考等级由 `MODEL_THINKING` 配置钉死。）
 
 ## 多 KEY 容灾
 
@@ -171,7 +166,7 @@ cc-bridge claude -- -p "hello"   # 也接受 "--" 分隔符
 
 ## 按模型配思考等级（GLM / DeepSeek）
 
-每个 target 模型通过上游配置里的 `MODEL_THINKING` 钉死一个思考等级（如 `~/.cc-bridge/glm.env` 里 `MODEL_THINKING=glm-5.2->max,glm-4.6->none`，或 `~/.cc-bridge/ds.env` 里 `MODEL_THINKING=deepseek-v4-flash->max`），取值 `max` / `high` / `none`（`none` = 不思考）。⚠️ `none` 只在 GLM 等认「不思考」的上游可用；DeepSeek `/anthropic` 端点的 `output_config.effort` 枚举不认 `none`，配了请求会 400（2026-08-10 实测），只能配 `max` / `high`。每条请求 adapter 按 target 模型查等级，对称写入三个字段——`thinking.type`（`enabled`/`disabled`）、`reasoning_effort`、`output_config.effort`——从而钉死等级、不受客户端 `/effort` 档位影响。未列出的模型走 `MODEL_THINKING_DEFAULT`（默认 `max`，由 adapter 的 `defaultThinking` 设定）。
+每个 target 模型通过上游配置里的 `MODEL_THINKING` 钉死一个思考等级（如 `~/.cc-bridge/glm.env` 里 `MODEL_THINKING=glm-5.2->max,glm-4.6->none`，或 `~/.cc-bridge/ds.env` 里 `MODEL_THINKING=deepseek-v4-flash->max`），取值 `max` / `high` / `none`（`none` = 不思考）。⚠️ `none` 只在 GLM 等认「不思考」的上游可用；DeepSeek `/anthropic` 端点的 `output_config.effort` 枚举不认 `none`，配了请求会 400（2026-08-10 实测），只能配 `max` / `high`。每条请求 adapter 按 target 模型查等级，对称写入三个字段——`thinking.type`（`enabled`/`disabled`）、`reasoning_effort`、`output_config.effort`——从而钉死等级：Claude Code 的 `/effort` 选任何等级都不影响实际上游模型的思考等级。未列出的模型走 `MODEL_THINKING_DEFAULT`（默认 `max`，由 adapter 的 `defaultThinking` 设定）。
 
 ## 添加新上游
 
@@ -207,12 +202,11 @@ CC-Bridge 就是为扩展而设计的。新增一个上游（如 `kimi`）：
 
 ## 注意 / 限制
 
-- **必须用 `xhigh`；`max` 在 VS Code 插件里是坏的。** VS Code 扩展（≥2.1.187）按 `["low","medium","high","xhigh"]` 校验 `effortLevel`——`max` 不在枚举里，会被静默强制为 `undefined`（→ 回落到 `high`）。`xhigh` 两者都接受。
-- 上游必须接受 `output_config.effort` / `reasoning_effort`，effort 解锁（和强制 max）才会生效。
+- 上游必须接受 `output_config.effort` / `reasoning_effort`，`MODEL_THINKING` 配置的思考等级才会生效。
 - 只有 `POST /v1/messages`（不含 `/v1/messages/count_tokens`）的 `model` 会被改写。其他路径原样转发。
 - **未知模型会被 HTTP 400 拒绝，绝不静默改写。**
 - `package.json` 的 `files` 排除了 `.env`；真实密钥绝不打包进全局安装。
-- effort 解锁只绕过**客户端**的 effort 闸门。它不改变模型对 effort 参数实际做什么——那取决于上游。
+- 思考等级由桥接按 `MODEL_THINKING` 配置写入请求体钉死，Claude Code 的 `/effort` 选任何等级都不影响实际上游模型的思考等级；模型对思考参数实际怎么执行，取决于上游。
 
 ## 版本管理
 
