@@ -8,7 +8,7 @@ CC-Bridge 框架的 DeepSeek 上游适配器，对接 [DeepSeek](https://api-doc
 
 - 把 Claude Code 发来的 Anthropic `/v1/messages` 请求体适配为 DeepSeek 友好的形式（见下表）。
 - 按 `MODEL_MAP` 把 `body.model` 从 spoof（如 `claude-opus-4-8` / `claude-haiku-4-5`）改写回 `deepseek-v4-pro` / `deepseek-v4-flash`。
-- **按 target 模型钉死思考等级**（`MODEL_THINKING`，取值 `max` / `high` / `none`，分别对应 DeepSeek-V4 的 Think Max / Think High / 不思考）——每个模型各自配置，忽略 Claude Code 传来的 effort 档位。
+- **按 target 模型钉死思考等级**（`MODEL_THINKING`，取值 `max` / `high`，对应 DeepSeek-V4 的 Think Max / Think High）——每个模型各自配置，忽略 Claude Code 传来的 effort 档位。⚠️ 不要配 `none`：`/anthropic` 端点的 `output_config.effort` 枚举不认 `none`，请求会 400（2026-08-10 实测），该端点暂无法关闭思考。
 
 ## 支持的模型
 
@@ -25,7 +25,7 @@ CC-Bridge 框架的 DeepSeek 上游适配器，对接 [DeepSeek](https://api-doc
 
 | 适配项 | 原因 |
 |--------|------|
-| 按 target 模型钉死 `thinking.type`（`enabled`/`disabled`）、`reasoning_effort`、`output_config.effort` | 由 `MODEL_THINKING` 配置每个模型的思考等级（`max`/`high`/`none`，对应 Think Max / Think High / 不思考），忽略客户端 `/effort` 档位 |
+| 按 target 模型钉死 `thinking.type`（`enabled`/`disabled`）、`reasoning_effort`、`output_config.effort` | 由 `MODEL_THINKING` 配置每个模型的思考等级（`max`/`high`，对应 Think Max / Think High），忽略客户端 `/effort` 档位。⚠️ 不要配 `none`（`/anthropic` 端点不认、请求 400） |
 | 剥离 `context_management` | Claude Code 专有，DeepSeek 不识别 |
 | 清空 `metadata.user_id` | DeepSeek 虽支持 `user_id` 做限流隔离，但 CC 传的是设备指纹 / session_id，对单用户限流无意义且泄露隐私 |
 | 递归剥离 `cache_control` | DeepSeek 官方兼容表标记为 Ignored，缓存是隐式自动的 |
@@ -38,7 +38,7 @@ CC-Bridge 框架的 DeepSeek 上游适配器，对接 [DeepSeek](https://api-doc
 
 配置文件：`~/.cc-bridge/ds.env`（模板见本目录 [`ds.env.example`](ds.env.example)）。
 
-主要字段：`API_BASE`（DeepSeek Anthropic 兼容端点，`https://api.deepseek.com/anthropic`，**必须带 `/anthropic` 后缀**）、`API_KEY`（逗号分隔多个 DeepSeek KEY，支持容灾）、`MODEL_MAP`（`spoof->target` 映射对，支持多对，默认 `claude-opus-4-8->deepseek-v4-pro`）、`MODEL_THINKING`（按 target 模型配思考等级 `max`/`high`/`none`，默认全 `max`）。
+主要字段：`API_BASE`（DeepSeek Anthropic 兼容端点，`https://api.deepseek.com/anthropic`，**必须带 `/anthropic` 后缀**）、`API_KEY`（逗号分隔多个 DeepSeek KEY，支持容灾）、`MODEL_MAP`（`spoof->target` 映射对，支持多对，默认 `claude-opus-4-8->deepseek-v4-pro`）、`MODEL_THINKING`（按 target 模型配思考等级 `max`/`high`，默认全 `max`；不要配 `none`——`/anthropic` 端点不认、请求 400，见上「⚠️」注）。
 
 ## adapter 接口
 

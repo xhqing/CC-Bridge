@@ -48,6 +48,49 @@ function isKeyError(status) {
   return status === 401 || status === 403;
 }
 
+// --- 会话标题提示词语言示例修正 ------------------------------------------------
+// Claude Code 客户端生成的会话标题提示词（内嵌于 native binary，2.1.226 实测）只有
+// 英语示例 + 一条「Good (Korean session)」韩语示例，没有中文示例。非英语会话（如
+// 中文）生成标题时，模型容易照抄韩语示例、输出韩语标题（DeepSeek 实测高频出现）。
+// 桥接层在转发前对请求体做结构化改写：递归遍历对象、只改文本节点，把韩语示例改成
+// 中文示例（语言标签同步改为 Chinese），让标题跟随对话语言生成。特征字符串
+// 「Good (Korean session)」只出现在该提示词里、其它请求不含，故命中即替换、未命中
+// 原样不动，零副作用；客户端将来改动提示词措辞导致特征失效时静默跳过即可。
+const TITLE_PROMPT_LANG_FIXES = [
+  // 原：Good (Korean session): {"title": "결제 모듈 리팩토링"}（韩语会话示例）
+  ['Good (Korean session): {"title": "결제 모듈 리팩토링"}',
+   'Good (Chinese session): {"title": "重构支付模块"}'],
+  // 原：Bad (English title for a Korean session): {"title": "Refactor payment module"}
+  ['Bad (English title for a Korean session)',
+   'Bad (English title for a Chinese session)'],
+];
+
+// 递归改写请求体中的文本节点（system / messages 的 text 等），仅命中标题提示词
+// 特征时替换；非文本节点 / 未命中一律原样不动。
+function fixTitlePromptLanguage(node) {
+  if (typeof node === 'string') {
+    let s = node;
+    for (const [from, to] of TITLE_PROMPT_LANG_FIXES) {
+      if (s.includes(from)) s = s.split(from).join(to);
+    }
+    return s;
+  }
+  if (Array.isArray(node)) {
+    for (let i = 0; i < node.length; i++) {
+      const v = fixTitlePromptLanguage(node[i]);
+      if (v !== node[i]) node[i] = v;
+    }
+    return node;
+  }
+  if (node && typeof node === 'object') {
+    for (const k of Object.keys(node)) {
+      const v = fixTitlePromptLanguage(node[k]);
+      if (v !== node[k]) node[k] = v;
+    }
+  }
+  return node;
+}
+
 // --- 缓存命中观测 ----------------------------------------------------------
 // 从上游响应的 usage 对象里提取缓存命中信息，返回一行可读日志；usage 不存在返回 null。
 // 用途：长期观测上游 context caching 的命中情况——命中率、缓存读 / 写 token 数，便于
@@ -348,6 +391,9 @@ function startServer(cfg, adapter) {
           }
           // 在 model 改写之后调用 adapter 做上游专属请求体适配。
           adapter.adaptRequestBody(obj, { target: currentTarget });
+          // 会话标题提示词语言示例修正：把客户端提示词里的韩语示例替换为中文示例
+          //（见 TITLE_PROMPT_LANG_FIXES），避免中文会话标题被模型照抄韩语示例。
+          fixTitlePromptLanguage(obj);
           body = Buffer.from(JSON.stringify(obj), 'utf-8');
           // 受 PROXY_DUMP=1 控制：dump 改写后的请求体（用于验证适配是否生效）
           if (process.env.PROXY_DUMP === '1' || cfg.DUMP) {

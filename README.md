@@ -238,14 +238,17 @@ works). They share one `API_BASE`. The bridge decides when to rotate per request
 
 Each target model gets a pinned thinking level via `MODEL_THINKING` in the
 upstream's config (e.g. `MODEL_THINKING=glm-5.2->max,glm-4.6->none` in
-`~/.cc-bridge/glm.env`, or `MODEL_THINKING=deepseek-v4-flash->none` in
+`~/.cc-bridge/glm.env`, or `MODEL_THINKING=deepseek-v4-flash->max` in
 `~/.cc-bridge/ds.env`). Levels are `max` / `high` / `none` (`none` = no
-thinking). On every request the adapter looks up the target model's level and
-writes it to three fields in concert — `thinking.type` (`enabled`/`disabled`),
-`reasoning_effort`, and `output_config.effort` — so the level holds regardless
-of the client's `/effort` tier. Models not listed fall back to
-`MODEL_THINKING_DEFAULT` (default `max`, set by `defaultThinking` in the
-adapter).
+thinking). ⚠️ `none` works only on upstreams that accept "no thinking" (e.g.
+GLM); DeepSeek's `/anthropic` endpoint does not accept `none` in
+`output_config.effort` — a request fails with 400 (verified 2026-08-10), so
+use only `max` / `high` there. On every request the adapter looks up the target
+model's level and writes it to three fields in concert — `thinking.type`
+(`enabled`/`disabled`), `reasoning_effort`, and `output_config.effort` — so
+the level holds regardless of the client's `/effort` tier. Models not listed
+fall back to `MODEL_THINKING_DEFAULT` (default `max`, set by `defaultThinking`
+in the adapter).
 
 ## Adding a new upstream
 

@@ -171,7 +171,7 @@ cc-bridge claude -- -p "hello"   # 也接受 "--" 分隔符
 
 ## 按模型配思考等级（GLM / DeepSeek）
 
-每个 target 模型通过上游配置里的 `MODEL_THINKING` 钉死一个思考等级（如 `~/.cc-bridge/glm.env` 里 `MODEL_THINKING=glm-5.2->max,glm-4.6->none`，或 `~/.cc-bridge/ds.env` 里 `MODEL_THINKING=deepseek-v4-flash->none`），取值 `max` / `high` / `none`（`none` = 不思考）。每条请求 adapter 按 target 模型查等级，对称写入三个字段——`thinking.type`（`enabled`/`disabled`）、`reasoning_effort`、`output_config.effort`——从而钉死等级、不受客户端 `/effort` 档位影响。未列出的模型走 `MODEL_THINKING_DEFAULT`（默认 `max`，由 adapter 的 `defaultThinking` 设定）。
+每个 target 模型通过上游配置里的 `MODEL_THINKING` 钉死一个思考等级（如 `~/.cc-bridge/glm.env` 里 `MODEL_THINKING=glm-5.2->max,glm-4.6->none`，或 `~/.cc-bridge/ds.env` 里 `MODEL_THINKING=deepseek-v4-flash->max`），取值 `max` / `high` / `none`（`none` = 不思考）。⚠️ `none` 只在 GLM 等认「不思考」的上游可用；DeepSeek `/anthropic` 端点的 `output_config.effort` 枚举不认 `none`，配了请求会 400（2026-08-10 实测），只能配 `max` / `high`。每条请求 adapter 按 target 模型查等级，对称写入三个字段——`thinking.type`（`enabled`/`disabled`）、`reasoning_effort`、`output_config.effort`——从而钉死等级、不受客户端 `/effort` 档位影响。未列出的模型走 `MODEL_THINKING_DEFAULT`（默认 `max`，由 adapter 的 `defaultThinking` 设定）。
 
 ## 添加新上游
 

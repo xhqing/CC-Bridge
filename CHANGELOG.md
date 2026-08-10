@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **修复中文会话标题被生成为韩语（会话标题提示词语言示例修正）**：Claude Code 客户端（2.1.226 实测）内嵌的会话标题生成提示词只有英语示例 + 一条「Good (Korean session)」韩语示例、没有中文示例——中文会话生成标题时，模型（DeepSeek 实测）容易照抄韩语示例、输出韩语标题。`core/server.js` 新增 `fixTitlePromptLanguage`：请求体解析后递归遍历文本节点，命中标题提示词特征（`Good (Korean session)`，只出现在该提示词里）时，把韩语示例替换为中文示例（`Good (Chinese session): {"title": "重构支付模块"}`）、`Bad (English title for a Korean session)` 语言标签同步改为 Chinese；未命中（非标题请求）一律原样不动。原因：标题提示词在客户端 native binary 内、CC-Bridge 无法直接改客户端，在桥接层改写请求体是唯一可行修法；特征命中即替换、零副作用，客户端将来改动提示词措辞导致特征失效时静默跳过即可。实测：用从 binary 提取的真实提示词构造请求经桥接转发，改写后请求体韩语示例已替换为中文示例、上游 200 接受。
+- **配置模板与文档补 DeepSeek `MODEL_THINKING=none` 的 400 边界**：实测 DeepSeek `/anthropic` 端点（`https://api.deepseek.com/anthropic`）的 `output_config.effort` 枚举只认 `low`/`medium`/`high`/`xhigh`/`ultra`/`max`，不认 `none`——`MODEL_THINKING` 配 `none`（想「不思考」）会让请求 400。`ds-bridge/ds.env.example` 模板把默认值 `deepseek-v4-flash->none` 改为 `->max`（原默认值照模板配置即会踩 400），取值说明与顶部注释补 ⚠️ 警告（none 只在 GLM 等认「不思考」的上游可用，DeepSeek 该端点暂无法关闭思考、只配 max/high）；`ds-bridge/README.md` 三处（钉死思考等级、适配表、主要字段）与主 README 中英「按模型配思考等级」节的 DeepSeek 示例（`->none` 改 `->max`）同步修正并加警告。原因：文档若仍教人配 `none`、模板默认仍是 `none`，与实测的 400 行为矛盾、照配置即踩坑，说明清楚并改默认值才能防患。（同日补漏：模板顶部取值说明的枚举仍残留「（max/high/none）」与三态对应表述，与下方警告自相矛盾——2026-08-10 改警告时漏改了顶部的枚举行，已同步改为「（max/high）」、删去「none=不思考」的三态对应说法，仅保留「max=Think Max、high=Think High」与 ⚠️ 警告。）
+
 ### Changed
 
 - **安装 / update 后自动准备默认上游配置 `~/.cc-bridge/ds.env`**：新增 `scripts/ensure-default-env.js` 作为 package.json 的 `postinstall` 钩子（`"scripts"` 加入 `files` 随 tgz 发布）——第一次安装（`npm install -g <tgz>`）或 `cc-bridge update` / `rollback` 重新安装（内部同为 `npm install -g <tgz>`，均会触发）后，若 `~/.cc-bridge/ds.env` 不存在，自动从 `ds-bridge/ds.env.example` 复制一份（内容即模板副本），用户填好 API key 即可直接 `cc-bridge start`；已存在则静默跳过、绝不覆盖用户已有配置。脚本由 `DEFAULT_UPSTREAM` 驱动，默认上游变更时自动跟随。README 中英与 `.claude/rules/cc-bridge-install.md` 安装流程补说明。原因：新环境装完 CLI 即配置就位，省去「先 `cc-bridge ds config` 手动生成」一步。
