@@ -81,14 +81,23 @@ cc-bridge glm config --import /path/to/.env   # 迁移已有 .env
 ```
 
 ```ini
-# ~/.cc-bridge/glm.env  — GLM（z.ai GLM-5.3）
-API_BASE=https://api.z.ai/api/anthropic
+# ~/.cc-bridge/glm.env  — GLM（z.ai 国际版 + 智谱 bigmodel.cn 国内版）
+# 多端点：每个 KEY 绑定各自的端点；KEY 轮换天然跨端点容灾（z.ai 的 KEY 失效
+# 自动切到智谱的 KEY）。
+API_BASES=zai->https://api.z.ai/api/anthropic,cn->https://open.bigmodel.cn/api/anthropic
 # 每个 KEY 单独一行——可在上方注释账号来源，整行注释掉即禁用该 KEY。
-# 旧式逗号分隔 API_KEY=k1,k2 仍兼容。
-# 账号 A
+# 旧式逗号分隔 API_KEY=k1,k2 仍兼容；单端点写 API_BASE=URL 也完全兼容。
+# KEY_NAME  = 用量统计的展示名（cc-bridge stats 按 key-name 分类）；同一配置内
+#             不能重复；KEY 本身不显示、不落盘。
+# KEY_BASE  = 该 KEY 用上面 API_BASES 里的哪个端点（不配则用第一个）。
+# 账号 A（z.ai Coding Plan）
 API_KEY_1=your_zai_key_1
-# 账号 B
-API_KEY_2=your_zai_key_2
+API_KEY_1_NAME=zai-work
+API_KEY_1_BASE=zai
+# 账号 B（智谱 bigmodel.cn）
+API_KEY_2=your_zhipu_key_2
+API_KEY_2_NAME=zhipu-cn
+API_KEY_2_BASE=cn
 # MODEL_MAP：spoof->target 映射对（逗号分隔）。opus 是 Claude Code 主力模型、haiku 是
 # 轻量模型——两对都指向 glm-5.3。第一对是「主力对」（启动 claude 时的默认模型）。
 # 旧式单对 SPOOF_MODEL / TARGET_MODEL 仍向后兼容。
@@ -108,14 +117,22 @@ cc-bridge claude [args]   # 启动桥接 + 启动指向它的 claude
 cc-bridge stop            # 停止后台服务
 cc-bridge restart         # 重启后台服务（stop + start）
 cc-bridge status          # 查看运行状态
-cc-bridge stats           # 查看按模型统计（token / 缓存命中）
+cc-bridge stats           # 用量统计：所有上游合并呈现（按 KEY 名 + 按模型）
+cc-bridge <upstream> stats  # 用量统计：单上游明细
 cc-bridge logs            # 查看桥接日志（Ctrl-C 退出）
 cc-bridge health          # 探测 /health
+cc-bridge set default upstream [name]  # 查看 / 设置默认上游
 cc-bridge help            # 完整帮助
 
 cc-bridge glm start       # 显式指定上游
 cc-bridge kimi start      # 预留上游 → 提示「未实现」
+
+cc-bridge set default upstream glm  # 把 glm 设为裸命令的默认上游
+cc-bridge set default upstream      # 查看当前默认上游
+cc-bridge set default upstream --reset  # 恢复内置默认（ds）
 ```
+
+> **默认上游：**不带 `<upstream>` 的命令（`cc-bridge start`、`cc-bridge restart` …）作用于默认上游。内置默认是 `ds`；`set default upstream` 把你的选择持久化到 `~/.cc-bridge/default-upstream`（只接受已实现的上游），之后所有裸命令都跟随它。`--reset` 清除该文件、恢复内置默认。
 
 `cc-bridge claude` 只为那次 `claude` 进程导出桥接环境变量，并在退出时清理桥接：
 
@@ -198,6 +215,7 @@ CC-Bridge 就是为扩展而设计的。新增一个上游（如 `kimi`）：
 | `kimi-bridge/`、`qwen-bridge/` | 预留占位（adapter + README）                |
 | `<name>-bridge/<name>.env.example` | 按上游的配置模板（GLM / DeepSeek / MiMo 已填；Kimi/Qwen 预留）  |
 | `~/.cc-bridge/<upstream>.env` | 真实配置（你的，gitignored，绝不打包）        |
+| `~/.cc-bridge/default-upstream` | 用户设置的默认上游（`set default upstream` 生成；不存在 = 内置默认 `ds`） |
 
 ## 注意 / 限制
 

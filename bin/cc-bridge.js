@@ -10,15 +10,19 @@ const { startDaemon, stopDaemon, restartDaemon, statusDaemon, tailLog } = requir
 const { showStats } = require('../core/stats');
 const { runWithClaude } = require('../core/claude');
 const { probeHealth } = require('../core/util');
-const { DEFAULT_UPSTREAM, listUpstreams, isKnown, isImplemented, loadAdapter } = require('../core/adapter');
+const { DEFAULT_UPSTREAM, getDefaultUpstream, setDefaultUpstream, clearDefaultUpstream, listUpstreams, isKnown, isImplemented, loadAdapter } = require('../core/adapter');
 const { runUpdate, runRollback } = require('../core/update');
+
+// 当前生效的默认上游：用户设置（~/.cc-bridge/default-upstream）> 内置 DEFAULT_UPSTREAM。
+// help 文案与上游省略时的解析都用它。
+const DEFAULT = getDefaultUpstream();
 
 const HELP = `cc-bridge — Claude Code upstream bridge (GLM / DeepSeek / MiMo / Kimi / Qwen …)
 
 Usage:
   cc-bridge [upstream] <command> [args]
 
-  upstream defaults to '${DEFAULT_UPSTREAM}' if omitted.
+  upstream defaults to '${DEFAULT}' if omitted (built-in '${DEFAULT_UPSTREAM}' unless changed via 'set').
   known upstreams: ${listUpstreams().join(', ')}
   implemented  : ${listUpstreams().filter((u) => isImplemented(u)).join(', ')}  (others reserved)
 
@@ -29,22 +33,26 @@ Commands:
   cc-bridge stop                  stop background service
   cc-bridge restart               restart background service (stop + start)
   cc-bridge status                show running status
-  cc-bridge stats                 show per-model token / cache-hit stats
+  cc-bridge stats                 show token / cache-hit stats for ALL upstreams (by key & model)
+  cc-bridge <upstream> stats      show stats for one upstream
   cc-bridge logs                  tail the bridge log (Ctrl-C to exit)
   cc-bridge health                probe /health
   cc-bridge config                edit config in $EDITOR
   cc-bridge config show           print config (API_KEY masked)
   cc-bridge config path           print config file path
   cc-bridge config --import <p>   import an existing .env into ~/.cc-bridge/<upstream>.env
+  cc-bridge set default upstream [name]   show / set the default upstream (saved at ~/.cc-bridge/default-upstream)
+  cc-bridge set default upstream --reset  restore the built-in default ('${DEFAULT_UPSTREAM}')
   cc-bridge update | --update     self-update to the latest GitHub Release
   cc-bridge rollback [version] | --rollback [version]  rollback to a specific or previous version
   cc-bridge version | -v | --version   print version
   cc-bridge help | -h | --help    this help
 
 Examples:
-  cc-bridge start                 # default upstream (${DEFAULT_UPSTREAM})
-  cc-bridge ${DEFAULT_UPSTREAM} daemon       # explicit upstream
-  cc-bridge ${DEFAULT_UPSTREAM} config show
+  cc-bridge start                 # default upstream (${DEFAULT})
+  cc-bridge ${DEFAULT} daemon       # explicit upstream
+  cc-bridge ${DEFAULT} config show
+  cc-bridge set default upstream glm  # make glm the default upstream
   cc-bridge rollback              # rollback to previous version
   cc-bridge rollback 2.3.0        # rollback to specific version
 
@@ -70,14 +78,15 @@ function parseGlobalConfig(argv) {
   return { configPath, rest };
 }
 
-// Split the post-options argv into { upstream, cmd, sub }. If the first token is
-// a known upstream name (ds/glm/kimi/mimo/qwen), treat it as the upstream selector;
-// otherwise default upstream and treat the first token as the command.
+// Split the post-options argv into { upstream, cmd, sub, explicit }. If the first
+// token is a known upstream name (ds/glm/kimi/mimo/qwen), treat it as the upstream
+// selector; otherwise default upstream (user-set > built-in) and treat the first
+// token as the command. explicit = 是否显式写了上游名（stats 等命令区分聚合/单上游）。
 function parseUpstream(rest) {
   if (rest.length && isKnown(rest[0])) {
-    return { upstream: rest[0], cmd: rest[1], sub: rest.slice(2) };
+    return { upstream: rest[0], cmd: rest[1], sub: rest.slice(2), explicit: true };
   }
-  return { upstream: DEFAULT_UPSTREAM, cmd: rest[0], sub: rest.slice(1) };
+  return { upstream: getDefaultUpstream(), cmd: rest[0], sub: rest.slice(1), explicit: false };
 }
 
 // Load adapter + config for commands that actually start the bridge.
@@ -99,7 +108,7 @@ function loadOrThrow(upstream, configPath) {
 async function main() {
   const argv = process.argv.slice(2);
   const { configPath: cfgPath, rest } = parseGlobalConfig(argv);
-  const { upstream, cmd, sub } = parseUpstream(rest);
+  const { upstream, cmd, sub, explicit } = parseUpstream(rest);
 
   if (!cmd) {
     console.log(HELP);
@@ -145,9 +154,14 @@ async function main() {
       break;
 
     case 'stats': {
-      // 读 server 落盘的 stats 快照（无需 daemon 在运行，也无需完整配置校验）。
-      const cfg = loadConfig({ upstream, configPath: cfgPath });
-      showStats(cfg);
+      // 聚合模式：裸 `cc-bridge stats`（未显式写上游、未带 --config）合并所有上游的
+      // 快照一起呈现；单上游模式：显式 `cc-bridge <upstream> stats` 或带 --config，
+      // 看该上游明细。
+      if (!explicit && !cfgPath && !process.env.CC_BRIDGE_CONFIG) {
+        showStats(null);
+      } else {
+        showStats(loadConfig({ upstream, configPath: cfgPath }));
+      }
       break;
     }
 
@@ -180,6 +194,37 @@ async function main() {
         break;
       }
       fail(`unknown config action '${action}'. Try: cc-bridge ${upstream} config show | path | --import <path>`);
+      break;
+    }
+
+    case 'set': {
+      // `set default upstream [name]`：显示 / 设置用户级默认上游（持久化在
+      // ~/.cc-bridge/default-upstream）。省略 upstream 参数时显示当前值；--reset 清除
+      // 用户设置、恢复内置默认。设置时校验必须是已实现的上游。
+      if (sub[0] !== 'default' || sub[1] !== 'upstream') {
+        fail(`unknown set action. Try: cc-bridge set default upstream [name] | --reset`);
+      }
+      const arg = sub[2];
+      if (arg === undefined) {
+        const cur = getDefaultUpstream();
+        const note = cur === DEFAULT_UPSTREAM ? ' (built-in)' : ' (user-set)';
+        console.log(`[bridge] default upstream : ${cur}${note}`);
+        console.log(`[bridge] to change        : cc-bridge set default upstream <${listUpstreams().filter(isImplemented).join('|')}>`);
+        console.log(`[bridge] to restore       : cc-bridge set default upstream --reset`);
+        break;
+      }
+      if (arg === '--reset' || arg === 'reset') {
+        clearDefaultUpstream();
+        console.log(`[bridge] default upstream reset to built-in '${DEFAULT_UPSTREAM}'`);
+        break;
+      }
+      try {
+        const file = setDefaultUpstream(arg);
+        console.log(`[bridge] default upstream set to '${arg}' (saved: ${file})`);
+        console.log(`[bridge] bare 'cc-bridge <command>' now targets '${arg}'`);
+      } catch (e) {
+        fail(e.message);
+      }
       break;
     }
 

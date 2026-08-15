@@ -9,7 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const { REGISTRY, DEFAULT_UPSTREAM } = require('./adapter');
+const { REGISTRY, DEFAULT_UPSTREAM, getDefaultUpstream } = require('./adapter');
 
 const DIR = path.join(os.homedir(), '.cc-bridge');
 
@@ -131,13 +131,45 @@ function parseModelThinking(rawMap, rawDefault) {
   return { map, defaultLevel: def || null };
 }
 
-// 收集所有 API KEY，支持两种写法（可混用、合并去空、不去重）：
+// 解析 API_BASES="name->url,name->url" 为 [{name, url}]（多端点，如 GLM 同时配
+// z.ai 国际版与智谱国内版，KEY 轮换跨端点容灾）。第一个条目是未绑定端点的 KEY 的
+// 默认端点。格式错误抛 Error（带清晰信息）；loadConfig 捕获并存入 apiBasesError，
+// 由 validate 报告，保持不抛契约。
+function parseApiBases(raw) {
+  const list = [];
+  const s = (raw || '').trim();
+  if (!s) return list;
+  for (const part of s.split(',')) {
+    const seg = part.trim();
+    if (!seg) continue;
+    const arrow = seg.indexOf('->');
+    if (arrow === -1) {
+      throw new Error(`invalid entry "${seg}" — expected "name->url"`);
+    }
+    const name = seg.slice(0, arrow).trim();
+    const url = seg.slice(arrow + 2).trim();
+    if (!name || !url) {
+      throw new Error(`invalid entry "${seg}" — both name and url are required around '->'`);
+    }
+    list.push({ name, url });
+  }
+  if (!list.length) throw new Error('API_BASES is set but contains no valid entries');
+  return list;
+}
+
+// 收集所有 API KEY，支持两种写法（可混用、合并去空、不去重），返回对象数组
+// [{ idx, value, name, baseName }]：
+//   idx      编号变量的数字（错误信息定位用）
+//   value    KEY 本体
+//   name     KEY_NAME_n 统计展示名（可空；空时展示用 #idx 兜底）
+//   baseName KEY_n_BASE 绑定的 API_BASES 端点名（可空；空时用第一个端点）
 //   1) 编号变量 API_KEY_1 / API_KEY_2 / API_KEY_3 …（推荐）。每个 KEY 独立成行，可单独
 //      写注释标注账号来源（如「# 工作账号」「# 个人账号」），也可单独注释掉整行来临时
 //      禁用某个 KEY——比在一长串逗号串里增删值方便得多。编号按数字大小升序排列（不是
-//      字典序，所以 API_KEY_10 仍排在 API_KEY_2 之后）。
+//      字典序，所以 API_KEY_10 仍排在 API_KEY_2 之后）。每个 KEY 的可选属性按同编号
+//      派生：API_KEY_1_NAME / API_KEY_1_BASE 对应 API_KEY_1。
 //   2) 旧式单变量 API_KEY=k1,k2,k3（逗号分隔，向后兼容）。若同时配了编号变量，老式
-//      API_KEY 的值会「追加」在编号变量之后，不会覆盖。
+//      API_KEY 的值会「追加」在编号变量之后，不会覆盖。旧式 KEY 无 NAME / BASE 属性。
 // process.env 与文件 env 都查（process.env 优先，与 get() 语义一致）。
 function collectKeys(env, get) {
   const re = /^API_KEY_\d+$/;
@@ -147,10 +179,45 @@ function collectKeys(env, get) {
   const ordered = [...names].sort(
     (a, b) => parseInt(a.slice('API_KEY_'.length), 10) - parseInt(b.slice('API_KEY_'.length), 10)
   );
-  const vals = ordered.map((n) => get(n, ''));
+  const out = [];
+  for (const n of ordered) {
+    const value = get(n, '').trim();
+    if (!value) continue;
+    out.push({
+      idx: parseInt(n.slice('API_KEY_'.length), 10),
+      value,
+      name: (get(`${n}_NAME`, '') || '').trim(),
+      baseName: (get(`${n}_BASE`, '') || '').trim(),
+    });
+  }
   const legacy = get('API_KEY', '');
-  if (legacy) vals.push(...legacy.split(','));
-  return vals.map((k) => k.trim()).filter(Boolean);
+  if (legacy) {
+    legacy.split(',').map((v) => v.trim()).filter(Boolean).forEach((v) => {
+      out.push({ idx: out.length + 1, value: v, name: '', baseName: '' });
+    });
+  }
+  return out;
+}
+
+// 校验 KEY 属性：KEY_NAME 在同一配置内不允许重复（stats 按 key-name 分类聚合，
+// 重名会把两个账号的用量混在一起）；KEY_n_BASE 必须是 API_BASES 里已定义的端点名。
+// 返回错误信息数组（空数组 = 通过）。
+function validateKeyAttrs(keys, apiBases) {
+  const errs = [];
+  const seen = new Map(); // name -> idx（首个使用者）
+  for (const k of keys) {
+    if (k.name) {
+      if (seen.has(k.name)) {
+        errs.push(`API_KEY_${seen.get(k.name)}_NAME and API_KEY_${k.idx}_NAME are both "${k.name}" — key names must be unique`);
+      } else {
+        seen.set(k.name, k.idx);
+      }
+    }
+    if (k.baseName && !apiBases.some((b) => b.name === k.baseName)) {
+      errs.push(`API_KEY_${k.idx}_BASE="${k.baseName}" does not match any API_BASES name (available: ${apiBases.map((b) => b.name).join(', ') || 'none'})`);
+    }
+  }
+  return errs;
 }
 
 // Resolve which .env to read: explicit --config > $CC_BRIDGE_CONFIG > per-upstream default.
@@ -162,8 +229,10 @@ function resolveConfigPath(upstream, override) {
 
 // Load and normalise config for an upstream. process.env wins over the .env file.
 // Never throws on missing fields — callers use validate() to check required ones.
+// 未显式指定上游时用用户级默认（~/.cc-bridge/default-upstream，见 adapter.js），
+// 用户未设置则回退内置 DEFAULT_UPSTREAM。
 function loadConfig(opts = {}) {
-  const upstream = opts.upstream || DEFAULT_UPSTREAM;
+  const upstream = opts.upstream || getDefaultUpstream();
   const file = resolveConfigPath(upstream, opts.configPath);
   const env = parseEnv(file);
   const get = (k, d) => {
@@ -174,9 +243,39 @@ function loadConfig(opts = {}) {
 
   // 多 KEY 容灾：支持编号变量 API_KEY_1 / API_KEY_2 / …（推荐）与旧式 API_KEY=k1,k2
   // （向后兼容）两种写法，详见 collectKeys。某 KEY 被判失效 / 欠费（401/403）或同 KEY
-  // 瞬态重试用尽时，自动切换到下一个 KEY——URL 不变，只换 KEY。
+  // 瞬态重试用尽时，自动切换到下一个 KEY——多端点（API_BASES）时 KEY 轮换天然跨端点容灾。
   const normBase = (v) => (v || '').replace(/\/+$/, '');
-  const KEYS = collectKeys(env, get);
+  const rawKeys = collectKeys(env, get);
+
+  // 多端点：API_BASES="name->url,…"（如 GLM 配 z.ai 国际版 + 智谱国内版）。未配时退
+  // 单端点 API_BASE（兼容旧配置）。解析失败不抛——错误存入 keyAttrErrors，由 validate
+  // 报给用户，保持 loadConfig「永不抛错」的契约。
+  let API_BASES = [];
+  let apiBasesError = null;
+  try {
+    API_BASES = parseApiBases(get('API_BASES', ''));
+  } catch (e) {
+    apiBasesError = e.message;
+  }
+  if (!API_BASES.length) {
+    const single = normBase(get('API_BASE', ''));
+    if (single) API_BASES = [{ name: 'default', url: single }];
+  }
+  // KEY 属性校验（key-name 查重 / base 绑定存在性）——同样不抛，入 validate 报告。
+  const keyAttrErrors = apiBasesError ? [] : validateKeyAttrs(rawKeys, API_BASES);
+
+  // 每个实际使用的 KEY 解析出最终 base URL（baseName → API_BASES 查表；未绑 → 第一个
+  // 端点）与统计展示名（name → 用户配的 key-name；未配 → #idx 兜底）。
+  const firstBase = API_BASES[0] ? API_BASES[0].url : '';
+  const KEYS = rawKeys.map((k) => {
+    const baseEntry = k.baseName ? API_BASES.find((b) => b.name === k.baseName) : null;
+    return {
+      value: k.value,
+      name: k.name || `#${k.idx}`,
+      baseName: k.baseName || (API_BASES.length ? API_BASES[0].name : ''),
+      base: baseEntry ? baseEntry.url : firstBase,
+    };
+  });
 
   // 模型映射（多对 spoof→target）。解析失败不抛——错误存入 modelMapError，由 validate
   // 报给用户，保持 loadConfig「永不抛错」的契约。
@@ -204,9 +303,15 @@ function loadConfig(opts = {}) {
   return {
     upstream,
     PORT: parseInt(get('PROXY_PORT', '8787'), 10) || 8787,
-    API_BASE: normBase(get('API_BASE', '')),
+    // 多端点列表 [{name, url}]（API_BASES；未配则由单 API_BASE 包成单元素数组）。
+    API_BASES,
+    // 兼容字段：首个端点的 URL。单端点配置下与旧 API_BASE 等值；多端点时仅作展示
+    // （banner / health），实际转发按每 KEY 的 base（KEYS[i].base）。
+    API_BASE: firstBase,
+    // 全部 KEY（对象数组）：value=KEY 本体、name=统计展示名（KEY_NAME_n 或 #idx）、
+    // baseName/base=该 KEY 使用的端点名与 URL。KEY 轮换在 KEYS 间进行，跨端点容灾。
     KEYS,
-    API_KEY: KEYS[0] || '', // 首个 KEY，向后兼容只读单 KEY 的旧代码
+    API_KEY: KEYS[0] ? KEYS[0].value : '', // 首个 KEY，向后兼容只读单 KEY 的旧代码
     // 模型映射：[{spoof, target}, ...]。空数组 → server 用 adapter 默认单对兜底。
     PAIRS,
     SPOOF_MODEL: PAIRS[0] ? PAIRS[0].spoof : '',   // 主力 spoof（兼容旧字段，= 第一对）
@@ -228,16 +333,20 @@ function loadConfig(opts = {}) {
     THINK_DEFAULT,
     modelMapError,
     thinkingError,
+    apiBasesError,
+    keyAttrErrors,
     configPath: file,
   };
 }
 
 function validate(cfg) {
   const missing = [];
-  if (!cfg.API_BASE) missing.push('API_BASE');
+  if (!cfg.API_BASE) missing.push('API_BASE (or API_BASES)');
   if (!cfg.KEYS.length) missing.push('API_KEY_1 (or legacy API_KEY)');
   if (cfg.modelMapError) missing.push(`MODEL_MAP (${cfg.modelMapError})`);
   if (cfg.thinkingError) missing.push(`MODEL_THINKING (${cfg.thinkingError})`);
+  if (cfg.apiBasesError) missing.push(`API_BASES (${cfg.apiBasesError})`);
+  for (const e of cfg.keyAttrErrors || []) missing.push(e);
   return missing;
 }
 
@@ -285,7 +394,15 @@ function showConfig(upstream) {
   console.log(`config file   : ${cfg.configPath}`);
   console.log(`PROXY_PORT    : ${cfg.PORT}`);
   console.log(`PROXY_LOG     : ${cfg.VERBOSE ? '1' : '0'}`);
-  console.log(`api base      : ${cfg.API_BASE || '(unset)'}`);
+  if (cfg.API_BASES.length > 1) {
+    console.log(`api bases     : ${cfg.API_BASES.length} endpoints`);
+    cfg.API_BASES.forEach((b, i) => {
+      const tag = i === 0 ? 'main' : '    ';
+      console.log(`  ${tag}  ${b.name}  ${b.url}`);
+    });
+  } else {
+    console.log(`api base      : ${cfg.API_BASE || '(unset)'}`);
+  }
   if (cfg.PAIRS.length) {
     console.log(`model map     : ${cfg.PAIRS.length} pair(s)  (first pair = main model)`);
     cfg.PAIRS.forEach((p, i) => {
@@ -306,9 +423,12 @@ function showConfig(upstream) {
     console.log(`thinking      : (unset — all models use default ${cfg.THINK_DEFAULT || 'adapter max'})`);
   }
   if (cfg.thinkingError) console.log(`MODEL_THINKING err : ${cfg.thinkingError}`);
+  if (cfg.apiBasesError) console.log(`API_BASES err : ${cfg.apiBasesError}`);
+  for (const e of cfg.keyAttrErrors || []) console.log(`KEY attr err  : ${e}`);
   console.log(`API_KEYs      : ${cfg.KEYS.length}`);
   cfg.KEYS.forEach((k, i) => {
-    console.log(`  ${String('#' + (i + 1)).padEnd(8)} ${mask(k)}`);
+    const baseTag = cfg.API_BASES.length > 1 ? `  @${k.baseName || 'default'}` : '';
+    console.log(`  ${String('#' + (i + 1)).padEnd(8)} ${mask(k.value)}  name=${k.name}${baseTag}`);
   });
   if (cfg.CONTEXT_WINDOW) console.log(`context       : ${cfg.CONTEXT_WINDOW.toLocaleString()} tokens`);
   if (cfg.MAX_OUTPUT_TOKENS) console.log(`maxOut        : ${cfg.MAX_OUTPUT_TOKENS.toLocaleString()} tokens`);
@@ -329,6 +449,6 @@ function resolvePairs(cfg, adapter) {
 
 module.exports = {
   configDir, configPathFor, pidPathFor, logPathFor, statsPathFor, templatePath,
-  parseEnv, parseModelMap, parseModelThinking, resolvePairs, resolveConfigPath, loadConfig, validate,
+  parseEnv, parseApiBases, parseModelMap, parseModelThinking, resolvePairs, resolveConfigPath, loadConfig, validate,
   ensureConfig, importConfig, editConfig, showConfig, mask, ensureDir,
 };

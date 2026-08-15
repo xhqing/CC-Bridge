@@ -22,7 +22,7 @@ cc-bridge 的运行版本**必须统一从 GitHub Release 的 tgz 全局安装**
 2. `npm pack` 生成 tgz；清理旧版本 tgz。
 3. `git commit` + `git tag v<x.y.z>` + `git push`（main 与 tag）。
 4. `gh release create v<x.y.z> --notes-file <notes> --latest` + `gh release upload v<x.y.z> <pkg>.tgz`。
-5. 再按「安装/升级流程」从 Release 装到本机，并重启 daemon。
+5. **发布即止**（2026-08-15 用户修订）：发版流程到 GitHub Release 为止，**不**替用户在本机安装升级、**不**重启 daemon——何时升级、重启哪个上游由用户自己决定。只在汇报里给出升级提示（`cc-bridge --update` + `cc-bridge <upstream> restart`），由用户自行执行。
 
 ## 自检
 

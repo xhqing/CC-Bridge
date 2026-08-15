@@ -16,6 +16,9 @@
 
 const http = require('http');
 const https = require('https');
+// 按 KEY 的端点协议选 http/https 模块（KEY.base 的 scheme 决定；生产端点都是 https，
+// http 供本地 mock / 内网自建网关用）。
+const transportFor = (keyUp) => (keyUp.protocol === 'http:' ? http : https);
 const fs = require('fs');
 const path = require('path');
 const { resolvePairs, statsPathFor } = require('./config');
@@ -142,8 +145,11 @@ function startServer(cfg, adapter) {
   const KEYS = cfg.KEYS || [];
   const VERBOSE = cfg.VERBOSE;
 
-  // --- 按模型 token 统计（跨请求累计，`cc-bridge stats <upstream>` 读取） ----------
-  // 每个 target 模型一条：请求数 + 输入 / 输出 / 缓存命中 / 缓存创建 token 合计。
+  // --- 按模型 / 按 KEY token 统计（跨请求累计，`cc-bridge stats` 读取） ------------
+  // 两个维度各一张表：
+  //   stats.models[key]   按 target 模型：请求数 + 输入 / 输出 / 缓存命中 / 缓存创建合计
+  //   stats.keys[keyName]  按 KEY 统计名（API_KEY_n_NAME，未配则 #n）：同上口径
+  // 按 KEY 维度用于用量归因（哪个账号用了多少），KEY 本体绝不落盘——只落 key-name。
   // 输入口径与 formatCacheUsage 一致（Anthropic 风格三者相加 ≈ 总输入，OpenAI 风格
   // prompt_tokens 已含 cached）——按两种风格二选一分支累计，保证命中率 = 命中 / 总输入
   // 的口径在单请求与跨请求汇总之间一致。
@@ -155,22 +161,23 @@ function startServer(cfg, adapter) {
     startedAt: new Date().toISOString(),  // 本次进程的统计起点（重启即重置）
     updatedAt: null,
     models: {},
+    keys: {},
   };
   let statsDirty = false;
   let lastStatsFlush = 0;
+  const zeroBucket = () => ({
+    requests: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheCreatedTokens: 0,
+  });
 
-  // 把一次上游响应的 usage 累计进 stats.models[model]。usage 结构未知时只记请求数。
-  // partial=true：流式末尾 message_delta.usage——Anthropic 规范里它只含输出侧统计
-  // （output_tokens，部分上游还带 cache_creation_input_tokens），只补充累计、
-  // 不重复计请求数（同一请求的请求数已在 message_start 计过）。
+  // 把一次上游响应的 usage 累计进 bucket（stats.models[model] / stats.keys[keyName]）。
+  // usage 结构未知时只记请求数。partial=true：流式末尾 message_delta.usage——Anthropic
+  // 规范里它只含输出侧统计（output_tokens，部分上游还带 cache_creation_input_tokens），
+  // 只补充累计、不重复计请求数（同一请求的请求数已在 message_start 计过）。
   // base（可选）：本请求 message_start 记入前的输入侧快照。DS 等走 OpenAI 转换的
   // 上游，流式真实 usage 只在 delta 返回（message_start 只有估算值），传入 base 后
   // delta 用真实值「回退估算 + 重记真实」输入侧，避免估算污染 stats。
-  function recordUsage(model, usage, partial, base) {
-    if (!model || !usage || typeof usage !== 'object') return;
-    const s = (stats.models[model] ||= {
-      requests: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheCreatedTokens: 0,
-    });
+  function recordInto(bucket, usage, partial, base) {
+    const s = bucket;
     if (partial) {
       // message_start 的 usage 里 output_tokens 恒为 0（规范如此），真实输出数
       // 只在流末尾的 delta 返回——必须在这里补累计，否则 stats 的 output 恒为 0
@@ -191,9 +198,6 @@ function startServer(cfg, adapter) {
         s.cacheHitTokens = base.cacheHitTokens + read;
         s.cacheCreatedTokens = base.cacheCreatedTokens + created;
       }
-      stats.updatedAt = new Date().toISOString();
-      statsDirty = true;
-      maybeFlushStats();
       return;
     }
     s.requests++;
@@ -215,6 +219,15 @@ function startServer(cfg, adapter) {
       // usage 存在但两种风格都不认：只记请求数与可能的输出，不污染输入 / 命中口径。
       s.outputTokens += usage.output_tokens || usage.completion_tokens || 0;
     }
+  }
+
+  // recordUsage 的入口：同一份 usage 同时累计进「按模型」与「按 KEY」两张表。
+  // keyName 为空（异常情况）时只累计按模型表。base 是 message_start 前的两表快照
+  // {models, keys}（各自可能为 null），按维度分发。详见 recordInto 的 partial / base 语义。
+  function recordUsage(model, keyName, usage, partial, base) {
+    if (!usage || typeof usage !== 'object') return;
+    if (model) recordInto(stats.models[model] ||= zeroBucket(), usage, partial, base && base.models);
+    if (keyName) recordInto(stats.keys[keyName] ||= zeroBucket(), usage, partial, base && base.keys);
     stats.updatedAt = new Date().toISOString();
     statsDirty = true;
     maybeFlushStats();
@@ -243,12 +256,12 @@ function startServer(cfg, adapter) {
 
   // 模型映射（多对 spoof→target）：同一上游可把多个 Claude 白名单模型路由到真实模型，
   // 例如 claude-opus-4-8 和 claude-haiku-4-5 都指向 glm-5.3。用户未配时用 adapter
-  // 默认单对兜底。apiBase / contextWindow / maxOutputTokens 为全局（一个上游共享），
-  // 挂到每一对上方便路由代码直接取用。
+  // 默认单对兜底。contextWindow / maxOutputTokens 为全局（一个上游共享），挂到每一对上
+  // 方便路由代码直接取用。apiBase 不再挂对上——多端点（API_BASES）下转发按每 KEY 的
+  // base（KEYS[i].base）而非全局。
   const pairs = resolvePairs(cfg, adapter).map((p) => ({
     spoof: p.spoof,
     target: p.target,
-    apiBase: cfg.API_BASE,
     contextWindow: cfg.CONTEXT_WINDOW,
     maxOutputTokens: cfg.MAX_OUTPUT_TOKENS,
   }));
@@ -257,12 +270,13 @@ function startServer(cfg, adapter) {
   // 每个请求按 target 模型钉死思考等级（max/high/none），忽略客户端 effort。
   adapter.modelThinking = cfg.THINK_MAP || {};
   adapter.thinkingDefault = cfg.THINK_DEFAULT || adapter.defaultThinking;
-  // 注入 apiBase 供 adapter.makeUpstreamCall 使用（如 DeepSeek 需要从 apiBase
-  // 派生 OpenAI 端点地址）。
+  // 注入 apiBase（首个端点）供 adapter.makeUpstreamCall 派生 OpenAI 端点地址用。
   adapter.apiBase = cfg.API_BASE;
 
+  // 展示用：首个端点 URL（banner / health）。实际转发按每 KEY 的 base。
   const apiBase = cfg.API_BASE;
-  const upstream = new URL(apiBase);
+  // 每个 KEY 的目标端点 URL 对象（与 KEYS 一一对应；多端点时各 KEY 可能不同）。
+  const keyUpstreams = KEYS.map((k) => new URL(k.base));
 
   // 每个 KEY 的熔断到期时间戳（0 = 未熔断）。
   const keyBlockedUntil = new Array(KEYS.length).fill(0);
@@ -313,6 +327,7 @@ function startServer(cfg, adapter) {
         upstream: adapter.name,
         display: adapter.displayName,
         api_base: apiBase,
+        api_bases: cfg.API_BASES,
         spoof: pairs[0] ? pairs[0].spoof : null,   // 主力对（兼容旧消费者）
         target: pairs[0] ? pairs[0].target : null,
         modelMap: pairs.map((p) => ({ spoof: p.spoof, target: p.target })),
@@ -335,8 +350,11 @@ function startServer(cfg, adapter) {
       // 本次请求的真实 target 模型（spoof 改写后 / 直传），提升到回调级供
       // handleUpstreamResponse 使用（按模型统计需要它在响应处理时可见）。
       let currentTarget = null;
-      // 本请求 message_start 记入前的输入侧快照：DS 等转换流的真实 usage 在
-      // message_delta 才返回，需用它回退估算值（见 recordUsage 的 base 参数）。
+      // 本次实际使用的 KEY 的统计名（按 KEY 维度用量归因用；随 KEY 轮换更新）。
+      let currentKeyName = null;
+      // 本请求 message_start 记入前的输入侧快照（models / keys 两张表各一份）：DS 等
+      // 转换流的真实 usage 在 message_delta 才返回，需用它回退估算值（见 recordUsage
+      // 的 base 参数）。
       let msgStartBase = null;
 
       // Only rewrite the model on /v1/messages POSTs with a JSON body.
@@ -417,26 +435,24 @@ function startServer(cfg, adapter) {
       }
 
       // Curate forwarded headers. The bridge sends x-api-key + anthropic-version per
-      // attempt (the key itself rotates per attempt).
-      const buildHeaders = (apiKey) => {
+      // attempt (the key itself rotates per attempt; host follows that key's endpoint).
+      const buildHeaders = (apiKey, keyUp) => {
         const headers = {};
         for (const [k, v] of Object.entries(clientReq.headers)) {
           if (DROP_HEADERS.has(k.toLowerCase())) continue;
           headers[k] = v;
         }
-        headers['host'] = upstream.host;
+        headers['host'] = keyUp.host;
         headers['x-api-key'] = apiKey;
         if (!headers['anthropic-version']) headers['anthropic-version'] = '2023-06-01';
         headers['content-length'] = String(body.length);
         return headers;
       };
 
-      const upPath = upstream.pathname.replace(/\/+$/, '') + clientReq.url;
-
       // 处理「已落到客户端的上游响应」：重试 / 换 KEY 窗口（建连 / 拿到首个上游
       // 响应前）已过，后续 stream / non-stream 改写都不再切换。
       function handleUpstreamResponse(upRes) {
-        log(`  ← ${upRes.statusCode}  ${Date.now() - t0}ms  ct=${upRes.headers['content-type'] || '-'}  key=#${currentKey + 1}`);
+        log(`  ← ${upRes.statusCode}  ${Date.now() - t0}ms  ct=${upRes.headers['content-type'] || '-'}  key=${currentKeyName || '#' + (currentKey + 1)}`);
 
         // 如果配置了 contextWindow / maxOutputTokens，注入 modelUsage 到响应，
         // 让 CLI 把正确的上下文窗口传给 webview；没配则 mu 为 null、不注入。
@@ -477,7 +493,7 @@ function startServer(cfg, adapter) {
                 let out = line;
                 try {
                   const data = JSON.parse(line.slice(5).trim());
-                  recordUsage(currentTarget, data.usage, true, msgStartBase);
+                  recordUsage(currentTarget, currentKeyName, data.usage, true, msgStartBase);
                   msgStartBase = null; // delta 每请求只来一次，用后即弃防重复回退
                   // 缓存命中观测：DS 等转换流的真实缓存信息只在 delta 返回，
                   // 与 message_start 的旁路观测互补（Anthropic 规范上游的 delta
@@ -503,11 +519,14 @@ function startServer(cfg, adapter) {
                   const data = JSON.parse(line.slice(5).trim());
                   const u = data.message && data.message.usage;
                   // 先快照再累计：供 message_delta 用真实 usage 回退本请求的估算输入
-                  const s0 = currentTarget && stats.models[currentTarget];
-                  msgStartBase = s0
-                    ? { inputTokens: s0.inputTokens, cacheHitTokens: s0.cacheHitTokens, cacheCreatedTokens: s0.cacheCreatedTokens }
+                  //（models / keys 两张表各一份快照）。
+                  const snap = (b) => b
+                    ? { inputTokens: b.inputTokens, cacheHitTokens: b.cacheHitTokens, cacheCreatedTokens: b.cacheCreatedTokens }
                     : null;
-                  recordUsage(currentTarget, u);
+                  const m0 = currentTarget && stats.models[currentTarget];
+                  const k0 = currentKeyName && stats.keys[currentKeyName];
+                  msgStartBase = { models: snap(m0), keys: snap(k0) };
+                  recordUsage(currentTarget, currentKeyName, u);
                   const cu = formatCacheUsage(u);
                   if (cu) log('  ' + cu);
                 } catch {}
@@ -534,7 +553,7 @@ function startServer(cfg, adapter) {
             try {
               const respBody = JSON.parse(raw);
               // 统计无条件：与是否注入 modelUsage 无关。
-              recordUsage(currentTarget, respBody.usage);
+              recordUsage(currentTarget, currentKeyName, respBody.usage);
               const cu = formatCacheUsage(respBody.usage);
               if (cu) log('  ' + cu);
               if (mu) {
@@ -603,10 +622,14 @@ function startServer(cfg, adapter) {
 
       function send(keyIdx) {
         t0 = Date.now();
+        const keyUp = keyUpstreams[keyIdx];
+        currentKeyName = KEYS[keyIdx].name;
+        const upPath = keyUp.pathname.replace(/\/+$/, '') + clientReq.url;
         log(
           `${clientReq.method} ${clientReq.url}  ` +
           `model=${modelIn || '-'}${rewritten ? ' → ' + rewritten : ' (passthrough)'}  ` +
-          `effort=${effort || '-'}  stream=${stream}  key=#${keyIdx + 1}/${KEYS.length}`,
+          `effort=${effort || '-'}  stream=${stream}  key=${KEYS[keyIdx].name}/${KEYS.length}` +
+          (KEYS.length > 1 || cfg.API_BASES.length > 1 ? `  base=${KEYS[keyIdx].baseName || 'default'}` : ''),
         );
 
         // adapter 接管路径：adapter 实现了 makeUpstreamCall 时，由 adapter 全权处理
@@ -614,7 +637,7 @@ function startServer(cfg, adapter) {
         // Anthropic，绕开其 Anthropic 端点的并发 tool_use 限制）。
         if (typeof adapter.makeUpstreamCall === 'function' && isMessages) {
           adapter.makeUpstreamCall({
-            apiKey: KEYS[keyIdx],
+            apiKey: KEYS[keyIdx].value,
             anthropicBody: obj,
             stream,
             log,
@@ -668,15 +691,17 @@ function startServer(cfg, adapter) {
           return;
         }
 
-        // 默认路径：直接透传 Anthropic 请求体到上游
+        // 默认路径：直接透传 Anthropic 请求体到上游（端点随 KEY：KEYS[keyIdx].base，
+        // 协议随端点 scheme：http/https）
+        const transport = transportFor(keyUp);
         const opts = {
-          hostname: upstream.hostname,
-          port: upstream.port || 443,
+          hostname: keyUp.hostname,
+          port: keyUp.port || (keyUp.protocol === 'http:' ? 80 : 443),
           path: upPath,
           method: clientReq.method,
-          headers: buildHeaders(KEYS[keyIdx]),
+          headers: buildHeaders(KEYS[keyIdx].value, keyUp),
         };
-        activeUpReq = https.request(opts, (upRes) => {
+        activeUpReq = transport.request(opts, (upRes) => {
           const status = upRes.statusCode || 502;
           const canRetry = attemptInKey < UPSTREAM_RETRY_DELAYS.length;
 
@@ -767,9 +792,13 @@ function startServer(cfg, adapter) {
   server.listen(PORT, '127.0.0.1', () => {
     console.log(`[bridge] listening on http://127.0.0.1:${PORT}`);
     console.log(`[bridge] upstream     : ${adapter.displayName}`);
-    console.log(`[bridge] api base     : ${apiBase}`);
+    if (cfg.API_BASES.length > 1) {
+      console.log(`[bridge] api bases    : ${cfg.API_BASES.map((b) => `${b.name}=${b.url}`).join('   |   ')}`);
+    } else {
+      console.log(`[bridge] api base     : ${apiBase}`);
+    }
     console.log(`[bridge] spoof → target : ${pairs.map((p) => `${p.spoof} → ${p.target}`).join('   |   ')}`);
-    console.log(`[bridge] API keys     : ${KEYS.length}`);
+    console.log(`[bridge] API keys     : ${KEYS.map((k) => k.name).join(', ')}`);
     const thinkPerModel = Object.entries(adapter.modelThinking || {})
       .map(([m, l]) => `${m}=${l}`).join(', ');
     console.log(`[bridge] thinking     : default=${adapter.thinkingDefault}${thinkPerModel ? '  per-model: ' + thinkPerModel : ''}`);
@@ -788,12 +817,13 @@ function startServer(cfg, adapter) {
 }
 
 // Allow `node core/server.js` (used by daemon/claude spawn). Upstream comes from
-// $CC_BRIDGE_UPSTREAM (default ds). Loads config from $CC_BRIDGE_CONFIG or the
+// $CC_BRIDGE_UPSTREAM, else the user-set default (~/.cc-bridge/default-upstream),
+// else the built-in default. Loads config from $CC_BRIDGE_CONFIG or the
 // per-upstream default, validates, then starts.
 if (require.main === module) {
-  const { DEFAULT_UPSTREAM, loadAdapter } = require('./adapter');
+  const { getDefaultUpstream, loadAdapter } = require('./adapter');
   const { loadConfig, validate } = require('./config');
-  const upstream = process.env.CC_BRIDGE_UPSTREAM || DEFAULT_UPSTREAM;
+  const upstream = process.env.CC_BRIDGE_UPSTREAM || getDefaultUpstream();
   let adapter;
   try {
     adapter = loadAdapter(upstream);

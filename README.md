@@ -122,14 +122,24 @@ cc-bridge glm config --import /path/to/.env   # migrate an existing .env
 ```
 
 ```ini
-# ~/.cc-bridge/glm.env  — GLM (z.ai GLM-5.3)
-API_BASE=https://api.z.ai/api/anthropic
+# ~/.cc-bridge/glm.env  — GLM (z.ai international + Zhipu bigmodel.cn)
+# Multiple endpoints: bind each key to its provider; key rotation fails over
+# across endpoints (a dead z.ai key switches to the Zhipu key automatically).
+API_BASES=zai->https://api.z.ai/api/anthropic,cn->https://open.bigmodel.cn/api/anthropic
 # One key per numbered line — comment each with its account, or comment out a
-# line to disable that key. Legacy comma-separated API_KEY=k1,k2 still works.
-# account A
+# line to disable that key. Legacy comma-separated API_KEY=k1,k2 still works,
+# and a single API_BASE=url is still accepted (one-endpoint setups).
+# KEY_NAME  = display name for per-key usage stats (cc-bridge stats); must be
+#            unique within the config — the key itself is never shown or stored.
+# KEY_BASE  = which API_BASES endpoint this key uses (default: the first one).
+# account A (z.ai Coding Plan)
 API_KEY_1=your_zai_key_1
-# account B
-API_KEY_2=your_zai_key_2
+API_KEY_1_NAME=zai-work
+API_KEY_1_BASE=zai
+# account B (Zhipu bigmodel.cn)
+API_KEY_2=your_zhipu_key_2
+API_KEY_2_NAME=zhipu-cn
+API_KEY_2_BASE=cn
 # MODEL_MAP: spoof->target pairs (comma-separated). opus is Claude Code's main model,
 # haiku its fast one — both routed to glm-5.3. First pair is the "main" pair (the
 # default model when launching claude). Legacy single-pair SPOOF_MODEL/TARGET_MODEL
@@ -154,14 +164,26 @@ cc-bridge claude [args]   # start bridge + launch claude pointed at it
 cc-bridge stop            # stop the background service
 cc-bridge restart         # restart the background service (stop + start)
 cc-bridge status          # show running status
-cc-bridge stats           # show per-model token / cache-hit stats
+cc-bridge stats           # token / cache-hit stats for ALL upstreams (by key & model)
+cc-bridge <upstream> stats  # stats for one upstream
 cc-bridge logs            # tail the bridge log (Ctrl-C to exit)
 cc-bridge health          # probe /health
+cc-bridge set default upstream [name]  # show / set the default upstream
 cc-bridge help            # full help
 
 cc-bridge glm start       # explicit upstream
 cc-bridge kimi start      # reserved upstream → reports "not implemented"
+
+cc-bridge set default upstream glm  # make glm the default for bare commands
+cc-bridge set default upstream      # show the current default
+cc-bridge set default upstream --reset  # restore the built-in default (ds)
 ```
+
+> **Default upstream:** bare commands (`cc-bridge start`, `cc-bridge restart`, …)
+> target the default upstream. The built-in default is `ds`; `set default upstream`
+> persists your choice at `~/.cc-bridge/default-upstream` (only implemented
+> upstreams are accepted) and every subsequent bare command follows it. `--reset`
+> clears the file and restores the built-in default.
 
 `cc-bridge claude` exports the bridge env for that `claude` process only and
 cleans the bridge up on exit:
@@ -281,6 +303,7 @@ etc.
 | `kimi-bridge/`, `qwen-bridge/` | reserved placeholders (adapter + README)    |
 | `<name>-bridge/<name>.env.example` | per-upstream config template (GLM / DeepSeek / MiMo filled; Kimi/Qwen reserved) |
 | `~/.cc-bridge/<upstream>.env` | real config (yours, gitignored, never packaged) |
+| `~/.cc-bridge/default-upstream` | user-set default upstream (created by `set default upstream`; absent = built-in `ds`) |
 
 ## Notes / caveats
 

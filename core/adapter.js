@@ -17,6 +17,10 @@
 //                   内部按 ctx.target 查 this.modelThinking（运行时由 server 从 MODEL_THINKING
 //                   注入）决定思考等级，this.thinkingDefault 为兜底
 
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+
 const REGISTRY = {
   glm: { dir: 'glm-bridge', implemented: true },
   kimi: { dir: 'kimi-bridge', implemented: false },
@@ -25,7 +29,45 @@ const REGISTRY = {
   ds: { dir: 'ds-bridge', implemented: true },
 };
 
+// 内置默认上游（代码级兜底）。用户可通过 `cc-bridge set default upstream <name>`
+// 覆盖为个人默认（持久化在 ~/.cc-bridge/default-upstream），运行时各取用点统一
+// 经 getDefaultUpstream() 解析：用户设置 > 内置默认。
 const DEFAULT_UPSTREAM = 'ds';
+
+// 用户级默认上游的持久化文件（与 <upstream>.env / .pid / .log 同目录）。
+const defaultUpstreamPath = () => path.join(os.homedir(), '.cc-bridge', 'default-upstream');
+
+// 读取用户设置的默认上游；未设置 / 文件损坏（含未知上游名）时回退内置默认。
+// 文件内容只取首个非空行、去首尾空白， tolerate 编辑器末尾换行。
+function getDefaultUpstream() {
+  let saved = null;
+  try {
+    const raw = fs.readFileSync(defaultUpstreamPath(), 'utf-8');
+    const first = raw.split('\n').map((l) => l.trim()).find((l) => l && !l.startsWith('#'));
+    if (first) saved = first;
+  } catch { /* 文件不存在等：回退内置默认 */ }
+  return isKnown(saved) ? saved : DEFAULT_UPSTREAM;
+}
+
+// 写入用户级默认上游。校验：必须是已实现的上游（预留未实现的不允许设为默认，
+// 否则 `cc-bridge start` 会在运行时才报错）。写入内容为单行上游名 + 换行。
+function setDefaultUpstream(name) {
+  if (!isKnown(name)) {
+    throw new Error(`unknown upstream '${name}'. Known upstreams: ${listUpstreams().join(', ')}.`);
+  }
+  if (!isImplemented(name)) {
+    throw new Error(`upstream '${name}' is reserved but not implemented yet.`);
+  }
+  const file = defaultUpstreamPath();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${name}\n`);
+  return file;
+}
+
+// 清除用户级默认上游，回退内置默认（文件不存在时静默成功）。
+function clearDefaultUpstream() {
+  try { fs.unlinkSync(defaultUpstreamPath()); } catch { /* 不存在即视为已清除 */ }
+}
 
 function listUpstreams() {
   return Object.keys(REGISTRY);
@@ -56,4 +98,8 @@ function loadAdapter(name) {
   return require(`../${entry.dir}/adapter`);
 }
 
-module.exports = { REGISTRY, DEFAULT_UPSTREAM, listUpstreams, isKnown, isImplemented, loadAdapter };
+module.exports = {
+  REGISTRY, DEFAULT_UPSTREAM, defaultUpstreamPath,
+  getDefaultUpstream, setDefaultUpstream, clearDefaultUpstream,
+  listUpstreams, isKnown, isImplemented, loadAdapter,
+};
