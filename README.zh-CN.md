@@ -17,7 +17,7 @@
 
 一个本地透明桥接框架，让 **Claude Code 访问第三方模型上游**（GLM / Kimi / Qwen ……）。每个上游在独立的 `<name>-bridge/` 目录下有一个 adapter 模块，共享同一套框架（`core/`）。**思考等级直接在 cc-bridge 的配置文件中配置**（`MODEL_THINKING`，见[按模型配思考等级](#按模型配思考等级glm--deepseek)）——Claude Code 的 `/effort` 选任何等级都不影响实际上游模型的思考等级；同时支持**多 API_KEY 容灾**。
 
-> **当前已实现：** `glm`（z.ai GLM-5.2）、`ds`（DeepSeek-V4）、`mimo`（小米 MiMo）。`kimi` / `qwen` 为预留占位——见[添加新上游](#添加新上游)。
+> **当前已实现：** `glm`（z.ai GLM-5.3）、`ds`（DeepSeek-V4）、`mimo`（小米 MiMo）。`kimi` / `qwen` 为预留占位——见[添加新上游](#添加新上游)。
 
 安装一次后，在**任意目录**下用一条命令即可启动：`cc-bridge`。
 
@@ -25,7 +25,7 @@
 
 | 上游 | 状态 | adapter | 目标模型 |
 |------|------|---------|----------|
-| `glm` | ✅ 已实现 | [glm-bridge/](glm-bridge/) | z.ai 上的 GLM-5.2 |
+| `glm` | ✅ 已实现 | [glm-bridge/](glm-bridge/) | z.ai 上的 GLM-5.3 |
 | `ds` | ✅ 已实现 | [ds-bridge/](ds-bridge/) | DeepSeek-V4（pro / flash） |
 | `mimo` | ✅ 已实现 | [mimo-bridge/](mimo-bridge/) | 小米 MiMo-V2.5-Pro |
 | `kimi` | 🚧 预留 | [kimi-bridge/](kimi-bridge/) | — |
@@ -82,7 +82,7 @@ cc-bridge glm config --import /path/to/.env   # 迁移已有 .env
 ```
 
 ```ini
-# ~/.cc-bridge/glm.env  — GLM（z.ai GLM-5.2）
+# ~/.cc-bridge/glm.env  — GLM（z.ai GLM-5.3）
 API_BASE=https://api.z.ai/api/anthropic
 # 每个 KEY 单独一行——可在上方注释账号来源，整行注释掉即禁用该 KEY。
 # 旧式逗号分隔 API_KEY=k1,k2 仍兼容。
@@ -91,9 +91,9 @@ API_KEY_1=your_zai_key_1
 # 账号 B
 API_KEY_2=your_zai_key_2
 # MODEL_MAP：spoof->target 映射对（逗号分隔）。opus 是 Claude Code 主力模型、haiku 是
-# 轻量模型——两对都指向 glm-5.2。第一对是「主力对」（启动 claude 时的默认模型）。
+# 轻量模型——两对都指向 glm-5.3。第一对是「主力对」（启动 claude 时的默认模型）。
 # 旧式单对 SPOOF_MODEL / TARGET_MODEL 仍向后兼容。
-MODEL_MAP=claude-opus-4-8->glm-5.2,claude-haiku-4-5->glm-5.2
+MODEL_MAP=claude-opus-4-8->glm-5.3,claude-haiku-4-5->glm-5.3
 PROXY_PORT=8787
 PROXY_LOG=1                             # 0 关闭每请求日志
 ```
@@ -143,7 +143,7 @@ cc-bridge claude -- -p "hello"   # 也接受 "--" 分隔符
 思考等级在 `~/.cc-bridge/<upstream>.env` 的 `MODEL_THINKING` 里配置（见[按模型配思考等级](#按模型配思考等级glm--deepseek)）——不需要在 `claude` 里设置 `/effort`，`/effort` 选任何等级都不影响实际上游模型的思考等级。桥接会记录每个请求，包括当前用的 KEY：
 
 ```
-[bridge 2026-07-24T03:00:00.000Z] POST /v1/messages  model=claude-opus-4-8 → glm-5.2  effort=xhigh  stream=true  key=#1/2
+[bridge 2026-07-24T03:00:00.000Z] POST /v1/messages  model=claude-opus-4-8 → glm-5.3  effort=xhigh  stream=true  key=#1/2
 [bridge …]   ← 200  812ms  ct=text/event-stream  key=#1
 ```
 
@@ -166,7 +166,7 @@ cc-bridge claude -- -p "hello"   # 也接受 "--" 分隔符
 
 ## 按模型配思考等级（GLM / DeepSeek）
 
-每个 target 模型通过上游配置里的 `MODEL_THINKING` 钉死一个思考等级（如 `~/.cc-bridge/glm.env` 里 `MODEL_THINKING=glm-5.2->max,glm-4.6->none`，或 `~/.cc-bridge/ds.env` 里 `MODEL_THINKING=deepseek-v4-flash->max`），取值 `max` / `high` / `none`（`none` = 不思考）。⚠️ `none` 只在 GLM 等认「不思考」的上游可用；DeepSeek `/anthropic` 端点的 `output_config.effort` 枚举不认 `none`，配了请求会 400（2026-08-10 实测），只能配 `max` / `high`。每条请求 adapter 按 target 模型查等级，对称写入三个字段——`thinking.type`（`enabled`/`disabled`）、`reasoning_effort`、`output_config.effort`——从而钉死等级：Claude Code 的 `/effort` 选任何等级都不影响实际上游模型的思考等级。未列出的模型走 `MODEL_THINKING_DEFAULT`（默认 `max`，由 adapter 的 `defaultThinking` 设定）。
+每个 target 模型通过上游配置里的 `MODEL_THINKING` 钉死一个思考等级（如 `~/.cc-bridge/glm.env` 里 `MODEL_THINKING=glm-5.3->max,glm-4.6->none`，或 `~/.cc-bridge/ds.env` 里 `MODEL_THINKING=deepseek-v4-flash->max`），取值 `max` / `high` / `none`（`none` = 不思考）。⚠️ `none` 只在 GLM 等认「不思考」的上游可用；DeepSeek `/anthropic` 端点的 `output_config.effort` 枚举不认 `none`，配了请求会 400（2026-08-10 实测），只能配 `max` / `high`。每条请求 adapter 按 target 模型查等级，对称写入三个字段——`thinking.type`（`enabled`/`disabled`）、`reasoning_effort`、`output_config.effort`——从而钉死等级：Claude Code 的 `/effort` 选任何等级都不影响实际上游模型的思考等级。未列出的模型走 `MODEL_THINKING_DEFAULT`（默认 `max`，由 adapter 的 `defaultThinking` 设定）。
 
 ## 添加新上游
 
@@ -193,7 +193,7 @@ CC-Bridge 就是为扩展而设计的。新增一个上游（如 `kimi`）：
 | `core/daemon.js`          | 后台进程管理（按上游的 pid + 日志）                |
 | `core/claude.js`          | 启动桥接 + 通过它启动 `claude`                    |
 | `core/util.js`            | 端口清理 / health 探测 / 就绪等待                 |
-| `glm-bridge/adapter.js`   | GLM（z.ai GLM-5.2）adapter——请求体适配、按模型配思考等级、模型上限表 |
+| `glm-bridge/adapter.js`   | GLM（z.ai GLM-5.3）adapter——请求体适配、按模型配思考等级、模型上限表 |
 | `ds-bridge/adapter.js`    | DeepSeek（DeepSeek-V4）adapter——请求体适配、按模型配思考等级 |
 | `mimo-bridge/adapter.js`  | MiMo（小米 MiMo-V2.5-Pro）adapter——请求体适配、按模型配思考开关 |
 | `kimi-bridge/`、`qwen-bridge/` | 预留占位（adapter + README）                |

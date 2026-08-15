@@ -58,7 +58,7 @@ function parseEnv(filePath) {
 
 // 解析模型映射为 [{spoof, target}, ...]。支持三种写法（优先级从高到低）：
 //   1) MODEL_MAP="spoofA->targetA,spoofB->targetB"  多对（推荐：单上游内多模型路由，
-//                                                   如 opus 和 haiku 都指向 glm-5.2）
+//                                                   如 opus 和 haiku 都指向 glm-5.3）
 //   2) SPOOF_MODEL + TARGET_MODEL                    单对（向后兼容旧配置）
 //   3) 两者都没配                                     返回 []（由 server 用 adapter 默认兜底）
 // 第一对约定为「主力对」：claude.js 用它的 spoof 作为启动 claude 时的 ANTHROPIC_MODEL。

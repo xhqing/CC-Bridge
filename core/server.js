@@ -242,7 +242,7 @@ function startServer(cfg, adapter) {
   }
 
   // 模型映射（多对 spoof→target）：同一上游可把多个 Claude 白名单模型路由到真实模型，
-  // 例如 claude-opus-4-8 和 claude-haiku-4-5 都指向 glm-5.2。用户未配时用 adapter
+  // 例如 claude-opus-4-8 和 claude-haiku-4-5 都指向 glm-5.3。用户未配时用 adapter
   // 默认单对兜底。apiBase / contextWindow / maxOutputTokens 为全局（一个上游共享），
   // 挂到每一对上方便路由代码直接取用。
   const pairs = resolvePairs(cfg, adapter).map((p) => ({

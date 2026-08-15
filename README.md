@@ -25,7 +25,7 @@ Code's `/effort` has **no effect on the upstream model's actual thinking level**
 whichever tier you pick. It also supports **multiple API keys with automatic
 failover**.
 
-> **Currently implemented:** `glm` (z.ai GLM-5.2), `ds` (DeepSeek-V4), `mimo`
+> **Currently implemented:** `glm` (z.ai GLM-5.3), `ds` (DeepSeek-V4), `mimo`
 > (Xiaomi MiMo). `kimi` / `qwen` are reserved placeholders — see
 > [Adding a new upstream](#adding-a-new-upstream).
 
@@ -36,7 +36,7 @@ Install it once and start it from **any directory** with a single command:
 
 | upstream | status | adapter | target model |
 |----------|--------|---------|--------------|
-| `glm` | ✅ implemented | [glm-bridge/](glm-bridge/) | GLM-5.2 on z.ai |
+| `glm` | ✅ implemented | [glm-bridge/](glm-bridge/) | GLM-5.3 on z.ai |
 | `ds` | ✅ implemented | [ds-bridge/](ds-bridge/) | DeepSeek-V4 (pro / flash) |
 | `mimo` | ✅ implemented | [mimo-bridge/](mimo-bridge/) | MiMo-V2.5-Pro (Xiaomi) |
 | `kimi` | 🚧 reserved | [kimi-bridge/](kimi-bridge/) | — |
@@ -123,7 +123,7 @@ cc-bridge glm config --import /path/to/.env   # migrate an existing .env
 ```
 
 ```ini
-# ~/.cc-bridge/glm.env  — GLM (z.ai GLM-5.2)
+# ~/.cc-bridge/glm.env  — GLM (z.ai GLM-5.3)
 API_BASE=https://api.z.ai/api/anthropic
 # One key per numbered line — comment each with its account, or comment out a
 # line to disable that key. Legacy comma-separated API_KEY=k1,k2 still works.
@@ -132,10 +132,10 @@ API_KEY_1=your_zai_key_1
 # account B
 API_KEY_2=your_zai_key_2
 # MODEL_MAP: spoof->target pairs (comma-separated). opus is Claude Code's main model,
-# haiku its fast one — both routed to glm-5.2. First pair is the "main" pair (the
+# haiku its fast one — both routed to glm-5.3. First pair is the "main" pair (the
 # default model when launching claude). Legacy single-pair SPOOF_MODEL/TARGET_MODEL
 # still work.
-MODEL_MAP=claude-opus-4-8->glm-5.2,claude-haiku-4-5->glm-5.2
+MODEL_MAP=claude-opus-4-8->glm-5.3,claude-haiku-4-5->glm-5.3
 PROXY_PORT=8787
 PROXY_LOG=1                             # 0 to silence per-request logging
 ```
@@ -199,7 +199,7 @@ no effect on the upstream model's actual thinking level. The bridge logs each
 request, including the key in use:
 
 ```
-[bridge 2026-07-24T03:00:00.000Z] POST /v1/messages  model=claude-opus-4-8 → glm-5.2  effort=xhigh  stream=true  key=#1/2
+[bridge 2026-07-24T03:00:00.000Z] POST /v1/messages  model=claude-opus-4-8 → glm-5.3  effort=xhigh  stream=true  key=#1/2
 [bridge …]   ← 200  812ms  ct=text/event-stream  key=#1
 ```
 
@@ -231,7 +231,7 @@ works). They share one `API_BASE`. The bridge decides when to rotate per request
 ## Per-model thinking level (GLM / DeepSeek)
 
 Each target model gets a pinned thinking level via `MODEL_THINKING` in the
-upstream's config (e.g. `MODEL_THINKING=glm-5.2->max,glm-4.6->none` in
+upstream's config (e.g. `MODEL_THINKING=glm-5.3->max,glm-4.6->none` in
 `~/.cc-bridge/glm.env`, or `MODEL_THINKING=deepseek-v4-flash->max` in
 `~/.cc-bridge/ds.env`). Levels are `max` / `high` / `none` (`none` = no
 thinking). ⚠️ `none` works only on upstreams that accept "no thinking" (e.g.
@@ -276,7 +276,7 @@ etc.
 | `core/daemon.js`         | background process management (per-upstream pid + log) |
 | `core/claude.js`         | start bridge + launch `claude` through it          |
 | `core/util.js`           | port cleanup / health probe / readiness wait       |
-| `glm-bridge/adapter.js`  | GLM (z.ai GLM-5.2) adapter — body adaptation, per-model thinking, model caps |
+| `glm-bridge/adapter.js`  | GLM (z.ai GLM-5.3) adapter — body adaptation, per-model thinking, model caps |
 | `ds-bridge/adapter.js`   | DeepSeek (DeepSeek-V4) adapter — body adaptation, per-model thinking |
 | `mimo-bridge/adapter.js` | MiMo (Xiaomi MiMo-V2.5-Pro) adapter — body adaptation, per-model thinking switch |
 | `kimi-bridge/`, `qwen-bridge/` | reserved placeholders (adapter + README)    |

@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **GLM 上游默认模型升级 glm-5.2 → glm-5.3（z.ai 2026-08-14 发布 GLM-5.3）**：z.ai Coding Plan 端点（`https://api.z.ai/api/anthropic`）已支持 `glm-5.3` 并把 glm-5.2 / glm-5.1 请求自动路由到 5.3，桥的默认目标对齐实际路由。改了什么：`glm-bridge/adapter.js`——`MODEL_MAX_TOKENS` 表新增 `glm-5.3: 131072`（上限表保留 glm-5.2 条目，用户显式配 5.2 仍可钳制）、`displayName` 改「GLM-5.3 (z.ai)」、`defaultTarget` 改 `glm-5.3`、文件头注释同步；`glm-bridge/glm.env.example`——`MODEL_MAP` 默认值 `claude-opus-4-8->glm-5.2` 改 `->glm-5.3` 并加注释（5.2/5.1 会被端点自动路由到 5.3，旧值可写但建议直接用 5.3）；`glm-bridge/README.md` 标题与正文、README 中英（已实现列表、上游表格、配置示例、日志示例、`MODEL_THINKING` 示例、文件表）、`.claude/CLAUDE.md` 已实现列表、`package.json` keyword（`glm-5.2` → `glm-5.3`）、`core/config.js` 与 `core/server.js` 注释两处同步。原因：GLM-5.3 与 5.2 同基座、编程能力 +50%（z.ai Code Bench），端点已自动路由，默认值与实际路由对齐后日志 / modelUsage 统计才准确。注意：按 token 计费的开放 API 尚未开放（官方标注 API coming soon），本次仅对齐 Coding Plan 端点。
+
 ## [2.8.2] - 2026-08-10
 
 ### Fixed

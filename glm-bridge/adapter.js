@@ -1,12 +1,13 @@
 'use strict';
 
-// GLM (z.ai) 上游适配器 —— Claude Code ↔ GLM-5.2 桥接的上游专属逻辑。
+// GLM (z.ai) 上游适配器 —— Claude Code ↔ GLM-5.3 桥接的上游专属逻辑。
 // 框架层（core/server.js）按统一 adapter 接口调用本文件。新增其它上游（Kimi、Qwen…）
 // 时，在各自的 <name>-bridge/adapter.js 实现同一接口即可，无需改动 core/。
 
 // GLM 系列模型的最大输出 token 上限（来自 z.ai 文档）。用于把 Claude Code 设的
 // max_tokens 钳到目标模型的合法范围，避免过大请求被上游拒绝。
 const MODEL_MAX_TOKENS = {
+  'glm-5.3': 131072,
   'glm-5.2': 131072,
   'glm-5.1': 131072,
   'glm-5-turbo': 131072,
@@ -51,8 +52,8 @@ function stripCacheControl(node) {
 
 module.exports = {
   name: 'glm',
-  displayName: 'GLM-5.2 (z.ai)',
-  defaultTarget: 'glm-5.2',
+  displayName: 'GLM-5.3 (z.ai)',
+  defaultTarget: 'glm-5.3',
   defaultSpoof: 'claude-opus-4-8',
   // 默认思考等级（max / high / none）。仅当 MODEL_THINKING 未列出某模型、且
   // MODEL_THINKING_DEFAULT 也未配时用它兜底。server 启动时会把用户配置注入
