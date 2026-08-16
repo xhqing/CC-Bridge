@@ -2,7 +2,18 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [2.10.1] - 2026-08-16
+
+### Fixed
+
+- **修复 daemon 频繁崩溃（上游掐长流触发重试后二次写响应头，`ERR_HTTP_HEADERS_SENT` 未捕获异常打死进程）**：用户长期遇到「cc-bridge 后台服务莫名其妙挂了、不得不手动重启」——日志实锤 glm 通道同签名崩溃 27 次、ds 通道 9 次（2026-07-28 至 2026-08-16），2026-08-16 16:57 又发生一次。根因链：① 流式请求上游秒回 200，桥已把响应头写给客户端（`writeHead` 已执行）、SSE 流开始转发；② 数十秒后连接被 RST 掐断，`read ECONNRESET` 落在**请求级** `activeUpReq.on('error')` 处理器（而非响应流上只断客户端的无害路径）；③ 该处理器只判断「是否瞬态错误」就重试，违反了代码注释里自己声明的设计意图（「重试窗口在拿到首个上游响应前已过，之后不再切换」）；④ 重试又拿到 200，对同一个客户端响应第二次 `writeHead` → Node 抛 `ERR_HTTP_HEADERS_SENT`，异常发生在 socket 数据回调的异步上下文、无人捕获 → 进程退出、daemon 死亡、桥上所有进行中请求断流。修复三层（互为保险）：**主修复**——每个请求闭包新增 `responseStarted` 标志，`handleUpstreamResponse` 入口置真；`activeUpReq.on('error')` 里响应已开始则不重试、直接断开客户端（流已部分转发本就无法透明重试，Claude Code 会自行重发该请求）。**防御纵深**——`handleUpstreamResponse` 入口检查 `responseStarted || clientRes.headersSent`，已发过头的迟到上游响应丢弃并断开，绝不二次写头（兜住所有迟到错误的变种）。**进程级兜底**——注册 `process.on('uncaughtException')` / `unhandledRejection`，记完整堆栈进 daemon 日志后继续运行（本地代理各请求状态互相隔离，继续运行安全），保证今后任何未预见的 bug 不再把 daemon 打死。修复后遇上游掐流的表现从「整个进程崩溃、手动重启」变为「单条请求断流（CC 端自行重试），daemon 活着」。实测复现验证：mock 上游首回 200 + 流中途 `resetAndDestroy()`（RST，错误落请求级 error、与生产日志一字不差）+ 重试回 200——旧版（2.10.0 安装副本）跑同场景堆栈与生产完全一致地崩溃；修复版同场景存活且日志显示「upstream 迟到错误（响应已开始转发，不重试）」按设计工作；429 / 500 瞬态重试、非流式请求的回归测试 3/3 通过（重试 / failover 行为未破坏）。原因：上游偶发掐长流本身难免（glm.log 中触发外因全是 ECONNRESET / ETIMEDOUT），把「掐流」放大成「整个 daemon 崩溃」是桥的重试时序漏洞，必须修。
+
 ## [2.10.0] - 2026-08-16
+
+### 变更（Visitors 徽章 alt 文本首字母大写：README 访问量徽章命名统一）
+
+- **为什么改**：用户指令（2026-08-16）「Visitors 徽章全局统一，首字母大写」——配合全局 `~/.claude/CLAUDE.md`「徽章英文首字母必须大写」新规，集中统计上线时挂的访问量徽章 `alt="visitors"` 为小写存量，与 badge JSON label（`Visits/day`）及大写规范不一致，本次一次收口。
+- **改了什么**：README（EN/CN）徽章区 visitors 徽章 `alt="visitors"` → `alt="Visitors"`，仅改 alt 显示文本，endpoint URL 与数据源不变。
 
 ### 新增（README 访问量徽章——舰队集中式访问统计）
 

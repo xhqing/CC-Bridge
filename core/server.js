@@ -356,6 +356,10 @@ function startServer(cfg, adapter) {
       // 转换流的真实 usage 在 message_delta 才返回，需用它回退估算值（见 recordUsage
       // 的 base 参数）。
       let msgStartBase = null;
+      // 上游响应是否已开始写给客户端（handleUpstreamResponse 已处理过一次）。置真后
+      // 重试 / 换 KEY 窗口关闭：响应头已发出、流已部分转发，无法透明重试，迟到的
+      // 错误只能断开客户端连接（Claude Code 会自行重发该请求）。
+      let responseStarted = false;
 
       // Only rewrite the model on /v1/messages POSTs with a JSON body.
       if (clientReq.method === 'POST' && urlPath.startsWith('/v1/messages') && body.length) {
@@ -452,6 +456,17 @@ function startServer(cfg, adapter) {
       // 处理「已落到客户端的上游响应」：重试 / 换 KEY 窗口（建连 / 拿到首个上游
       // 响应前）已过，后续 stream / non-stream 改写都不再切换。
       function handleUpstreamResponse(upRes) {
+        // 双保险：本请求已有响应在处理（responseStarted）或响应头已发给客户端
+        // （headersSent）时，绝不能再次 writeHead——否则 ERR_HTTP_HEADERS_SENT
+        // 未捕获异常会打死整个 daemon（2026-08-16 前 glm 27 次 / ds 9 次崩溃的
+        // 根因）。丢弃本次迟到的上游响应、断开客户端即可。
+        if (responseStarted || clientRes.headersSent) {
+          log(`  ← ${upRes.statusCode}  丢弃迟到响应（响应已开始转发，不二次写头），断开客户端`);
+          try { upRes.destroy(); } catch { /* already gone */ }
+          try { clientRes.destroy(); } catch { /* already gone */ }
+          return;
+        }
+        responseStarted = true;
         log(`  ← ${upRes.statusCode}  ${Date.now() - t0}ms  ct=${upRes.headers['content-type'] || '-'}  key=${currentKeyName || '#' + (currentKey + 1)}`);
 
         // 如果配置了 contextWindow / maxOutputTokens，注入 modelUsage 到响应，
@@ -745,6 +760,14 @@ function startServer(cfg, adapter) {
         });
 
         activeUpReq.on('error', (err) => {
+          // 响应已开始转发后收到的迟到错误（典型：长流中途被上游掐断，ECONNRESET
+          // 落在请求级 error 而非响应流 error）——重试会拿到第二个 200、对同一
+          // clientRes 二次 writeHead 打死 daemon。只能断开客户端，CC 自行重发。
+          if (responseStarted || clientRes.headersSent) {
+            log(`  upstream 迟到错误（响应已开始转发，不重试）：${err.message}（${Date.now() - t0}ms），断开客户端`);
+            try { clientRes.destroy(); } catch { /* already gone */ }
+            return;
+          }
           const canRetry = attemptInKey < UPSTREAM_RETRY_DELAYS.length;
           if (isTransient(err) && canRetry) {
             const delay = UPSTREAM_RETRY_DELAYS[attemptInKey];
@@ -812,6 +835,18 @@ function startServer(cfg, adapter) {
       process.exit(0);
     });
   }
+
+  // 进程级兜底：daemon 是长驻后台进程，任何未预见的同步异常 / 未处理 rejection
+  // 默认会打死整个进程、桥上所有请求断流（历史上 ERR_HTTP_HEADERS_SENT 即如此，
+  // 2026-08-16 前 glm 崩 27 次 / ds 崩 9 次）。本地代理各请求状态互相隔离，单个
+  // 异常不污染其它请求——记完整堆栈进 daemon 日志（供排障），继续运行；仅统计
+  // 落盘不受影响（每 30s 节流 + 退出前 flush 照常）。
+  process.on('uncaughtException', (err) => {
+    console.error(`[bridge ${new Date().toISOString()}] uncaughtException（已兜底，daemon 继续运行）:`, err);
+  });
+  process.on('unhandledRejection', (reason) => {
+    console.error(`[bridge ${new Date().toISOString()}] unhandledRejection（已兜底，daemon 继续运行）:`, reason);
+  });
 
   return server;
 }

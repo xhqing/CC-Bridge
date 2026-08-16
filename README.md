@@ -11,7 +11,7 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Built with Claude Code](https://img.shields.io/badge/Built%20with-Claude%20Code-19C37D)
 ![Type: Project](https://img.shields.io/badge/Type-Project-lightgrey)
-<img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/xhqing/xhqing/main/traffic/badges/CC-BRIDGE.json" alt="visitors" />
+<img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/xhqing/xhqing/main/traffic/badges/CC-BRIDGE.json" alt="Visitors" />
 
 </div>
 
