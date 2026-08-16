@@ -4,6 +4,11 @@
 
 ## [2.10.0] - 2026-08-16
 
+### 新增（README 访问量徽章——舰队集中式访问统计）
+
+- **为什么改**：全舰队上线集中式「真去重」访问统计（图片徽章方案无法去重，走官方 Traffic API 路线）：统计集中部署在 xhqing 仓库（`scripts/update_traffic.py` + 每日 GitHub Action），各 fleet 仓库只需在 README 挂徽章、零运行负担。
+- **改了什么**：README（EN/CN）徽章区新增 visitors 徽章（shields.io endpoint 指向 `xhqing/xhqing` 仓库 `traffic/badges/<repo>.json`，由每日采集的官方 Traffic API 数据更新）。徽章数字含义：按日去重访客的累计（GitHub 只提供每日 uniques，跨天不去重），自 2026-08-16 起累计。
+
 ### Added
 
 - **KEY 优先级（`API_KEY_n_PRIORITY`，高优先级 KEY 先用）**：同一配置配多个 KEY 时，每个 KEY 可配 `API_KEY_n_PRIORITY=<非负整数>`（越大越先用；未配视为 0）。实现方式：`core/config.js` 的 `collectKeys` 收集 `KEY_n_PRIORITY` 原始值、`validateKeyAttrs` 校验必须为非负整数（非法值启动即报 `API_KEY_n_PRIORITY="…" is not a non-negative integer`），`loadConfig` 构建 KEYS 后按「优先级降序 + 同优先级保持编号序（稳定排序）」排好——server 的 KEY 轮换按数组顺序扫，排序后 `pickNextKey` / 熔断 / 回切逻辑天然生效，`core/server.js` 零改动。效果：最高优先级 KEY 承接全部流量，直到它被 401/403 熔断才落到低优先级 KEY；熔断 60 秒到期后自动回切高优先级 KEY——「主力 KEY 先用、备用 KEY 只做容灾」由配置表达，无需增删 KEY 行。全部不配 `PRIORITY` 时排序退化为编号顺序，行为与旧版完全一致（向后兼容）。`cc-bridge config show` 的 KEY 列表加 `prio=` 标注；`glm` / `ds` / `mimo` 三个 env.example 模板补 `API_KEY_n_PRIORITY` 字段说明与主力 / 备用示例；README 中英（特性条目、配置示例、多 KEY 容灾节各补「KEY 优先级」条目）同步。原因：用户要控制多 KEY 的使用顺序（如主力账号先消耗、备用账号只在容灾时启用），此前只能靠调整 `API_KEY_n` 编号顺序表达，加新账号要重排编号、不便维护。实测：本地 mock 双 KEY（低优先级编号在前）——请求先后走高优先级 KEY；高优先级 KEY 恒 401 时熔断切换低优先级 KEY 成功 200；非法 PRIORITY 值被 `validate` 拦截；不配 PRIORITY 时顺序保持编号序。
