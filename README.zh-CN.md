@@ -16,7 +16,7 @@
 
 一个本地透明桥接框架，让 **Claude Code 访问第三方模型上游**（GLM / Kimi / Qwen ……）。每个上游在独立的 `<name>-bridge/` 目录下有一个 adapter 模块，共享同一套框架（`core/`）。**思考等级直接在 cc-bridge 的配置文件中配置**（`MODEL_THINKING`，见[按模型配思考等级](#按模型配思考等级glm--deepseek)）——Claude Code 的 `/effort` 选任何等级都不影响实际上游模型的思考等级；同时支持**多 API_KEY 容灾**。
 
-> **当前已实现：** `glm`（z.ai GLM-5.3）、`ds`（DeepSeek-V4）、`mimo`（小米 MiMo）。`kimi` / `qwen` 为预留占位——见[添加新上游](#添加新上游)。
+> **当前已实现：** `glm`（GLM-5.3，z.ai 国际版 / 智谱 bigmodel.cn 国内版）、`ds`（DeepSeek-V4）、`mimo`（小米 MiMo）。`kimi` / `qwen` 为预留占位——见[添加新上游](#添加新上游)。
 
 安装一次后，在**任意目录**下用一条命令即可启动：`cc-bridge`。
 
@@ -24,7 +24,7 @@
 
 | 上游 | 状态 | adapter | 目标模型 |
 |------|------|---------|----------|
-| `glm` | ✅ 已实现 | [glm-bridge/](glm-bridge/) | z.ai 上的 GLM-5.3 |
+| `glm` | ✅ 已实现 | [glm-bridge/](glm-bridge/) | GLM-5.3（z.ai / 智谱 bigmodel.cn） |
 | `ds` | ✅ 已实现 | [ds-bridge/](ds-bridge/) | DeepSeek-V4（pro / flash） |
 | `mimo` | ✅ 已实现 | [mimo-bridge/](mimo-bridge/) | 小米 MiMo-V2.5-Pro |
 | `kimi` | 🚧 预留 | [kimi-bridge/](kimi-bridge/) | — |
@@ -34,7 +34,7 @@
 
 - **框架 + 按上游分 adapter。** 所有与上游无关的通用逻辑（HTTP 服务、多 KEY 容灾、model 改写、modelUsage 注入、daemon）都在 [`core/`](core/)；每个上游的专属逻辑（请求体适配、思考等级映射、模型上限表）在各自的 `<name>-bridge/adapter.js`。新增上游只需加一个文件 + 注册表一行。
 - **思考等级配置文件配置。** 每个 target 模型通过 `~/.cc-bridge/<upstream>.env` 里的 `MODEL_THINKING` 钉死一个思考等级（如 `max` / `high` / `none`，未列出的模型走 `MODEL_THINKING_DEFAULT`，默认 `max`）。思考等级由桥接配置决定，**Claude Code 的 `/effort` 选任何等级都不影响实际上游模型的思考等级**。（见[按模型配思考等级](#按模型配思考等级glm--deepseek)。）
-- **多 KEY 容灾。** 把多个 KEY 各自成行配成编号变量（`API_KEY_1=…`、`API_KEY_2=…`…，每行一个，方便单独注释账号来源、或整行注释掉禁用某 KEY；旧式逗号分隔 `API_KEY=k1,k2` 仍兼容）。某 KEY 返回 `401`/`403`（被拒 / 额度用尽）时，桥把它熔断 60 秒并立即切换下一个 KEY；瞬态错误（`429`/`5xx`/网络）先在同 KEY 重试、用尽再换。URL 始终不变，只轮换 KEY。（见[多 KEY 容灾](#多-key-容灾)。）
+- **多 KEY 容灾。** 把多个 KEY 各自成行配成编号变量（`API_KEY_1=…`、`API_KEY_2=…`…，每行一个，方便单独注释账号来源、或整行注释掉禁用某 KEY；旧式逗号分隔 `API_KEY=k1,k2` 仍兼容）。某 KEY 返回 `401`/`403`（被拒 / 额度用尽）时，桥把它熔断 60 秒并立即切换下一个 KEY；瞬态错误（`429`/`5xx`/网络）先在同 KEY 重试、用尽再换。KEY 按 `API_KEY_n_PRIORITY` 优先级从高到低使用（不配则按编号顺序），主力 KEY 熔断才落备用、到期自动回切。URL 始终不变，只轮换 KEY。（见[多 KEY 容灾](#多-key-容灾)。）
 - **按上游隔离。** 每个上游有独立配置（`~/.cc-bridge/<upstream>.env`）、pid 文件、日志文件，多个上游可作为 daemon 并存（用不同 `PROXY_PORT`）。
 - **零运行时依赖。** 仅用 Node ≥ 14 内置模块。
 
@@ -90,11 +90,14 @@ API_BASES=zai->https://api.z.ai/api/anthropic,cn->https://open.bigmodel.cn/api/a
 # KEY_NAME  = 用量统计的展示名（cc-bridge stats 按 key-name 分类）；同一配置内
 #             不能重复；KEY 本身不显示、不落盘。
 # KEY_BASE  = 该 KEY 用上面 API_BASES 里的哪个端点（不配则用第一个）。
-# 账号 A（z.ai Coding Plan）
+# KEY_PRIORITY = 优先级（非负整数，越大越先用）：高优先级 KEY 先用，它熔断 / 失效后
+#             才轮到低优先级 KEY（同优先级按编号顺序）。全部不配则按编号顺序（旧行为）。
+# 账号 A（z.ai Coding Plan，主力）
 API_KEY_1=your_zai_key_1
 API_KEY_1_NAME=zai-work
 API_KEY_1_BASE=zai
-# 账号 B（智谱 bigmodel.cn）
+API_KEY_1_PRIORITY=10
+# 账号 B（智谱 bigmodel.cn，备用）
 API_KEY_2=your_zhipu_key_2
 API_KEY_2_NAME=zhipu-cn
 API_KEY_2_BASE=cn
@@ -178,6 +181,7 @@ cc-bridge claude -- -p "hello"   # 也接受 "--" 分隔符
 
 - **熔断是软优化，不是硬约束。** 被 `401`/`403` 判死的 KEY 会被跳过 60 秒，避免每条请求都先撞一次已知坏 KEY。60 秒后重新尝试。若所有 KEY 恰好都在熔断期，仍会挑一个相对可用的试。
 - **瞬态错误不熔断 KEY。** `5xx` 或网络抖动是网关问题，不是 KEY 的错——不连累无辜 KEY。
+- **KEY 优先级。** 每个 KEY 可配 `API_KEY_n_PRIORITY`（非负整数）。KEY 按优先级从高到低依次使用；同优先级按编号顺序，未配视为 0。这样轮换顺序就成了「主力 / 备用」关系：最高优先级的 KEY 承接全部流量，直到它熔断才落到备用 KEY；熔断 60 秒到期后自动回切主力。全部不配 `PRIORITY` 则保持纯编号顺序（旧行为）。
 - **重试有界。** 每条请求最多尝试 `KEY 数 ×（1 + 2 次重试）` 次，容灾总会终止。
 
 ## 按模型配思考等级（GLM / DeepSeek）
@@ -209,7 +213,7 @@ CC-Bridge 就是为扩展而设计的。新增一个上游（如 `kimi`）：
 | `core/daemon.js`          | 后台进程管理（按上游的 pid + 日志）                |
 | `core/claude.js`          | 启动桥接 + 通过它启动 `claude`                    |
 | `core/util.js`            | 端口清理 / health 探测 / 就绪等待                 |
-| `glm-bridge/adapter.js`   | GLM（z.ai GLM-5.3）adapter——请求体适配、按模型配思考等级、模型上限表 |
+| `glm-bridge/adapter.js`   | GLM（z.ai / 智谱 bigmodel.cn）adapter——请求体适配、按模型配思考等级、模型上限表 |
 | `ds-bridge/adapter.js`    | DeepSeek（DeepSeek-V4）adapter——请求体适配、按模型配思考等级 |
 | `mimo-bridge/adapter.js`  | MiMo（小米 MiMo-V2.5-Pro）adapter——请求体适配、按模型配思考开关 |
 | `kimi-bridge/`、`qwen-bridge/` | 预留占位（adapter + README）                |

@@ -158,18 +158,20 @@ function parseApiBases(raw) {
 }
 
 // 收集所有 API KEY，支持两种写法（可混用、合并去空、不去重），返回对象数组
-// [{ idx, value, name, baseName }]：
+// [{ idx, value, name, baseName, priority }]：
 //   idx      编号变量的数字（错误信息定位用）
 //   value    KEY 本体
 //   name     KEY_NAME_n 统计展示名（可空；空时展示用 #idx 兜底）
 //   baseName KEY_n_BASE 绑定的 API_BASES 端点名（可空；空时用第一个端点）
+//   priority KEY_n_PRIORITY 优先级（正整数，越大越先用；未配视为 0）
 //   1) 编号变量 API_KEY_1 / API_KEY_2 / API_KEY_3 …（推荐）。每个 KEY 独立成行，可单独
 //      写注释标注账号来源（如「# 工作账号」「# 个人账号」），也可单独注释掉整行来临时
 //      禁用某个 KEY——比在一长串逗号串里增删值方便得多。编号按数字大小升序排列（不是
 //      字典序，所以 API_KEY_10 仍排在 API_KEY_2 之后）。每个 KEY 的可选属性按同编号
-//      派生：API_KEY_1_NAME / API_KEY_1_BASE 对应 API_KEY_1。
+//      派生：API_KEY_1_NAME / API_KEY_1_BASE / API_KEY_1_PRIORITY 对应 API_KEY_1。
 //   2) 旧式单变量 API_KEY=k1,k2,k3（逗号分隔，向后兼容）。若同时配了编号变量，老式
-//      API_KEY 的值会「追加」在编号变量之后，不会覆盖。旧式 KEY 无 NAME / BASE 属性。
+//      API_KEY 的值会「追加」在编号变量之后，不会覆盖。旧式 KEY 无 NAME / BASE /
+//      PRIORITY 属性。
 // process.env 与文件 env 都查（process.env 优先，与 get() 语义一致）。
 function collectKeys(env, get) {
   const re = /^API_KEY_\d+$/;
@@ -188,20 +190,21 @@ function collectKeys(env, get) {
       value,
       name: (get(`${n}_NAME`, '') || '').trim(),
       baseName: (get(`${n}_BASE`, '') || '').trim(),
+      priorityRaw: (get(`${n}_PRIORITY`, '') || '').trim(),
     });
   }
   const legacy = get('API_KEY', '');
   if (legacy) {
     legacy.split(',').map((v) => v.trim()).filter(Boolean).forEach((v) => {
-      out.push({ idx: out.length + 1, value: v, name: '', baseName: '' });
+      out.push({ idx: out.length + 1, value: v, name: '', baseName: '', priorityRaw: '' });
     });
   }
   return out;
 }
 
 // 校验 KEY 属性：KEY_NAME 在同一配置内不允许重复（stats 按 key-name 分类聚合，
-// 重名会把两个账号的用量混在一起）；KEY_n_BASE 必须是 API_BASES 里已定义的端点名。
-// 返回错误信息数组（空数组 = 通过）。
+// 重名会把两个账号的用量混在一起）；KEY_n_BASE 必须是 API_BASES 里已定义的端点名；
+// KEY_n_PRIORITY 必须是非负整数。返回错误信息数组（空数组 = 通过）。
 function validateKeyAttrs(keys, apiBases) {
   const errs = [];
   const seen = new Map(); // name -> idx（首个使用者）
@@ -215,6 +218,9 @@ function validateKeyAttrs(keys, apiBases) {
     }
     if (k.baseName && !apiBases.some((b) => b.name === k.baseName)) {
       errs.push(`API_KEY_${k.idx}_BASE="${k.baseName}" does not match any API_BASES name (available: ${apiBases.map((b) => b.name).join(', ') || 'none'})`);
+    }
+    if (k.priorityRaw && !/^\d+$/.test(k.priorityRaw)) {
+      errs.push(`API_KEY_${k.idx}_PRIORITY="${k.priorityRaw}" is not a non-negative integer`);
     }
   }
   return errs;
@@ -265,17 +271,25 @@ function loadConfig(opts = {}) {
   const keyAttrErrors = apiBasesError ? [] : validateKeyAttrs(rawKeys, API_BASES);
 
   // 每个实际使用的 KEY 解析出最终 base URL（baseName → API_BASES 查表；未绑 → 第一个
-  // 端点）与统计展示名（name → 用户配的 key-name；未配 → #idx 兜底）。
+  // 端点）、统计展示名（name → 用户配的 key-name；未配 → #idx 兜底）与优先级
+  // （priority → KEY_n_PRIORITY；未配或非法为 0）。随后按优先级降序稳定排序：
+  // 高优先级 KEY 排前、每次请求先用（KEY 轮换按数组顺序扫）；同优先级保持配置里
+  // 的编号顺序（稳定排序）。这让「主力 KEY 先用、备用 KEY 容灾」由配置表达，
+  // server 的轮换 / 熔断逻辑无需感知优先级。
   const firstBase = API_BASES[0] ? API_BASES[0].url : '';
-  const KEYS = rawKeys.map((k) => {
-    const baseEntry = k.baseName ? API_BASES.find((b) => b.name === k.baseName) : null;
-    return {
-      value: k.value,
-      name: k.name || `#${k.idx}`,
-      baseName: k.baseName || (API_BASES.length ? API_BASES[0].name : ''),
-      base: baseEntry ? baseEntry.url : firstBase,
-    };
-  });
+  const KEYS = rawKeys
+    .map((k) => {
+      const baseEntry = k.baseName ? API_BASES.find((b) => b.name === k.baseName) : null;
+      return {
+        value: k.value,
+        name: k.name || `#${k.idx}`,
+        baseName: k.baseName || (API_BASES.length ? API_BASES[0].name : ''),
+        base: baseEntry ? baseEntry.url : firstBase,
+        priority: /^\d+$/.test(k.priorityRaw || '') ? parseInt(k.priorityRaw, 10) : 0,
+        idx: k.idx,
+      };
+    })
+    .sort((a, b) => b.priority - a.priority || a.idx - b.idx);
 
   // 模型映射（多对 spoof→target）。解析失败不抛——错误存入 modelMapError，由 validate
   // 报给用户，保持 loadConfig「永不抛错」的契约。
@@ -309,7 +323,8 @@ function loadConfig(opts = {}) {
     // （banner / health），实际转发按每 KEY 的 base（KEYS[i].base）。
     API_BASE: firstBase,
     // 全部 KEY（对象数组）：value=KEY 本体、name=统计展示名（KEY_NAME_n 或 #idx）、
-    // baseName/base=该 KEY 使用的端点名与 URL。KEY 轮换在 KEYS 间进行，跨端点容灾。
+    // baseName/base=该 KEY 使用的端点名与 URL、priority=优先级（大者先用，已按降序
+    // 排好）。KEY 轮换在 KEYS 间进行（顺序即优先级顺序），跨端点容灾。
     KEYS,
     API_KEY: KEYS[0] ? KEYS[0].value : '', // 首个 KEY，向后兼容只读单 KEY 的旧代码
     // 模型映射：[{spoof, target}, ...]。空数组 → server 用 adapter 默认单对兜底。
@@ -428,7 +443,8 @@ function showConfig(upstream) {
   console.log(`API_KEYs      : ${cfg.KEYS.length}`);
   cfg.KEYS.forEach((k, i) => {
     const baseTag = cfg.API_BASES.length > 1 ? `  @${k.baseName || 'default'}` : '';
-    console.log(`  ${String('#' + (i + 1)).padEnd(8)} ${mask(k.value)}  name=${k.name}${baseTag}`);
+    const priTag = k.priority ? `  prio=${k.priority}` : '';
+    console.log(`  ${String('#' + (i + 1)).padEnd(8)} ${mask(k.value)}  name=${k.name}${baseTag}${priTag}`);
   });
   if (cfg.CONTEXT_WINDOW) console.log(`context       : ${cfg.CONTEXT_WINDOW.toLocaleString()} tokens`);
   if (cfg.MAX_OUTPUT_TOKENS) console.log(`maxOut        : ${cfg.MAX_OUTPUT_TOKENS.toLocaleString()} tokens`);

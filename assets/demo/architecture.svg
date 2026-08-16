@@ -104,7 +104,7 @@
     <text x="1037" y="208" text-anchor="middle" font-size="16" font-weight="700" fill="#f0f6fc">第三方上游</text>
 
     <rect x="935" y="230" width="205" height="44" rx="8" fill="#0f2f1f" stroke="#238636"/>
-    <text x="952" y="252" font-size="14" fill="#3fb950">GLM-5.2</text>
+    <text x="952" y="252" font-size="14" fill="#3fb950">GLM-5.3</text>
     <text x="952" y="266" font-size="11" fill="#8b949e">z.ai · api.z.ai/api/anthropic</text>
 
     <rect x="935" y="288" width="205" height="44" rx="8" fill="#10243a" stroke="#1f6feb"/>

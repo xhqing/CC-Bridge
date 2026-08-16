@@ -24,15 +24,15 @@
     <text x="60" y="138" fill="#58a6ff">[bridge] </text>
     <text x="128" y="138" fill="#e6edf3">listening on <tspan fill="#3fb950">http://127.0.0.1:8787</tspan></text>
     <text x="60" y="162" fill="#58a6ff">[bridge] </text>
-    <text x="128" y="162" fill="#e6edf3">upstream     : <tspan fill="#d29922">GLM-5.2 (z.ai)</tspan></text>
+    <text x="128" y="162" fill="#e6edf3">upstream     : <tspan fill="#d29922">GLM (z.ai / bigmodel.cn)</tspan></text>
     <text x="60" y="186" fill="#58a6ff">[bridge] </text>
     <text x="128" y="186" fill="#e6edf3">api base     : <tspan fill="#58a6ff">http://127.0.0.1:8899/api/anthropic</tspan></text>
     <text x="60" y="210" fill="#58a6ff">[bridge] </text>
-    <text x="128" y="210" fill="#e6edf3">spoof → target : <tspan fill="#d29922">claude-opus-4-8 → glm-5.2</tspan>   |   <tspan fill="#d29922">claude-haiku-4-5 → glm-5.2</tspan></text>
+    <text x="128" y="210" fill="#e6edf3">spoof → target : <tspan fill="#d29922">claude-opus-4-8 → glm-5.3</tspan>   |   <tspan fill="#d29922">claude-haiku-4-5 → glm-5.3</tspan></text>
     <text x="60" y="234" fill="#58a6ff">[bridge] </text>
     <text x="128" y="234" fill="#e6edf3">API keys     : <tspan fill="#3fb950">2</tspan>   <tspan fill="#8b949e">(API_KEY_1 + API_KEY_2 容灾)</tspan></text>
     <text x="60" y="258" fill="#58a6ff">[bridge] </text>
-    <text x="128" y="258" fill="#e6edf3">thinking     : default=<tspan fill="#d29922">max</tspan>  per-model: <tspan fill="#d29922">glm-5.2=max</tspan></text>
+    <text x="128" y="258" fill="#e6edf3">thinking     : default=<tspan fill="#d29922">max</tspan>  per-model: <tspan fill="#d29922">glm-5.3=max</tspan></text>
     <text x="60" y="282" fill="#58a6ff">[bridge] </text>
     <text x="128" y="282" fill="#e6edf3">logging      : on</text>
 
@@ -40,13 +40,13 @@
     <text x="82" y="320" fill="#e6edf3">curl -s http://127.0.0.1:8787/health</text>
 
     <text x="60" y="354" fill="#8b949e"># 本地探活端点 —— 不触达上游，返回桥接状态</text>
-    <text x="60" y="380" fill="#e6edf3">{"status":"<tspan fill="#3fb950">ok</tspan>","upstream":"glm","display":"GLM-5.2 (z.ai)",</text>
+    <text x="60" y="380" fill="#e6edf3">{"status":"<tspan fill="#3fb950">ok</tspan>","upstream":"glm","display":"GLM (z.ai / bigmodel.cn)",</text>
     <text x="60" y="404" fill="#e6edf3"> "api_base":"http://127.0.0.1:8899/api/anthropic",</text>
-    <text x="60" y="428" fill="#e6edf3"> "spoof":"claude-opus-4-8","target":"glm-5.2",</text>
-    <text x="60" y="452" fill="#e6edf3"> "modelMap":[{"spoof":"claude-opus-4-8","target":"glm-5.2"},</text>
-    <text x="60" y="476" fill="#e6edf3">             {"spoof":"claude-haiku-4-5","target":"glm-5.2"}],</text>
+    <text x="60" y="428" fill="#e6edf3"> "spoof":"claude-opus-4-8","target":"glm-5.3",</text>
+    <text x="60" y="452" fill="#e6edf3"> "modelMap":[{"spoof":"claude-opus-4-8","target":"glm-5.3"},</text>
+    <text x="60" y="476" fill="#e6edf3">             {"spoof":"claude-haiku-4-5","target":"glm-5.3"}],</text>
     <text x="60" y="500" fill="#e6edf3"> "keys":<tspan fill="#3fb950">2</tspan>}</text>
   </g>
 
-  <text x="40" y="552" font-size="12" fill="#484f58">取自真实运行输出 · CC-Bridge v2.8.1</text>
+  <text x="40" y="552" font-size="12" fill="#484f58">取自真实运行输出 · CC-Bridge v2.9.1</text>
 </svg>

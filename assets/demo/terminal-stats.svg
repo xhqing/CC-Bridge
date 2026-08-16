@@ -26,7 +26,7 @@
     <text x="70" y="224" fill="#8b949e">model       reqs         input     cache-hit     hit%        output</text>
     <text x="70" y="250" fill="#e6edf3">glm-4.6       37       412,800       168,900    40.9%        12,990</text>
     <text x="70" y="276" fill="#e6edf3">glm-4.7       63       865,400       420,700    48.6%        24,110</text>
-    <text x="70" y="302" fill="#d29922">glm-5.2      148     2,843,120     2,176,400    <tspan fill="#3fb950">76.5%</tspan>        51,248</text>
+    <text x="70" y="302" fill="#d29922">glm-5.3      148     2,843,120     2,176,400    <tspan fill="#3fb950">76.5%</tspan>        51,248</text>
     <text x="70" y="328" fill="#58a6ff">total        248     4,121,320     2,766,000    67.1%        88,348</text>
 
     <text x="60" y="368" fill="#8b949e">[bridge] input = 输入 token 合计（已含缓存命中）；hit% = cache-hit / input；</text>

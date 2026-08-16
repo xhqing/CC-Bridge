@@ -16,9 +16,15 @@ function printBanner(cfg, adapter) {
   const pairs = resolvePairs(cfg, adapter);
   console.log(`[bridge] proxy ready  (port ${cfg.PORT})`);
   console.log(`[bridge] upstream     : ${adapter.displayName}`);
-  console.log(`[bridge] api base     : ${cfg.API_BASE}`);
+  // 与 server.js 横幅同口径：多端点列出全部端点，单端点沿用 api base 一行。
+  if (cfg.API_BASES.length > 1) {
+    console.log(`[bridge] api bases    : ${cfg.API_BASES.map((b) => `${b.name}=${b.url}`).join('   |   ')}`);
+  } else {
+    console.log(`[bridge] api base     : ${cfg.API_BASE}`);
+  }
   console.log(`[bridge] spoof → target : ${pairs.map((p) => `${p.spoof} → ${p.target}`).join('   |   ')}`);
-  console.log(`[bridge] API keys     : ${cfg.KEYS.length}`);
+  // 显示 key 名（多端点时标注每个 key 绑的端点），与 server.js 横幅一致。
+  console.log(`[bridge] API keys     : ${cfg.KEYS.map((k) => (cfg.API_BASES.length > 1 ? `${k.name}@${k.baseName}` : k.name)).join(', ')}`);
 }
 
 function tailLog(upstream) {

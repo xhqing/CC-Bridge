@@ -1,10 +1,10 @@
 'use strict';
 
-// GLM (z.ai) 上游适配器 —— Claude Code ↔ GLM-5.3 桥接的上游专属逻辑。
+// GLM 上游适配器（z.ai 国际版 / 智谱国内版 bigmodel.cn）—— Claude Code ↔ GLM 桥接的上游专属逻辑。
 // 框架层（core/server.js）按统一 adapter 接口调用本文件。新增其它上游（Kimi、Qwen…）
 // 时，在各自的 <name>-bridge/adapter.js 实现同一接口即可，无需改动 core/。
 
-// GLM 系列模型的最大输出 token 上限（来自 z.ai 文档）。用于把 Claude Code 设的
+// GLM 系列模型的最大输出 token 上限（来自 GLM 官方文档）。用于把 Claude Code 设的
 // max_tokens 钳到目标模型的合法范围，避免过大请求被上游拒绝。
 const MODEL_MAX_TOKENS = {
   'glm-5.3': 131072,
@@ -36,7 +36,7 @@ function mapEffortToGLM(effort) {
   return null; // 未知值不写
 }
 
-// 递归剥离所有 cache_control 字段。z.ai 不认 Anthropic 的 cache_control 标记，
+// 递归剥离所有 cache_control 字段。GLM 端点不认 Anthropic 的 cache_control 标记，
 // 留着只是请求体膨胀（随后按需在 tools 尾部重新打标）。
 function stripCacheControl(node) {
   if (!node || typeof node !== 'object') return;
@@ -52,7 +52,9 @@ function stripCacheControl(node) {
 
 module.exports = {
   name: 'glm',
-  displayName: 'GLM-5.3 (z.ai)',
+  // GLM 适配器可同时接 z.ai 国际版与智谱国内版（API_BASES 多端点），displayName
+  // 不再钉死单一厂商，实际端点看横幅的 api bases 行。
+  displayName: 'GLM (z.ai / bigmodel.cn)',
   defaultTarget: 'glm-5.3',
   defaultSpoof: 'claude-opus-4-8',
   // 默认思考等级（max / high / none）。仅当 MODEL_THINKING 未列出某模型、且
@@ -65,12 +67,12 @@ module.exports = {
   // 改写项：
   //   · thinking / reasoning_effort：按 target 模型查 MODEL_THINKING 的等级（max/high/none）
   //     钉死，忽略客户端 effort；未列出的模型用默认等级（见 defaultThinking）
-  //   · 剥离 context_management （Claude Code 专有，z.ai 不识别）
-  //   · 清洗 metadata.user_id （设备指纹/session_id 发给 z.ai 无意义且泄露隐私）
+  //   · 剥离 context_management （Claude Code 专有，GLM 端点不识别）
+  //   · 清洗 metadata.user_id （设备指纹/session_id 发给上游无意义且泄露隐私）
   //   · 递归剥离 cache_control （随后按需在 tools 尾部重新打标）
   //   · 钳 max_tokens 到目标模型上限
   //   · 剥离 Anthropic 专有 system 段（billing header / Agent SDK 声明）
-  //   · tools 尾部打 cache_control（触发 z.ai context caching）
+  //   · tools 尾部打 cache_control（触发 GLM context caching）
   adaptRequestBody(obj, ctx) {
     if (!obj || typeof obj !== 'object') return obj;
     const targetModel = (ctx && ctx.target) || this.defaultTarget;
@@ -78,7 +80,7 @@ module.exports = {
     // 思考等级：按 target 模型查 MODEL_THINKING（server 启动时注入 this.modelThinking），
     // 未列出则用 this.thinkingDefault（MODEL_THINKING_DEFAULT）→ 再退 this.defaultThinking。
     // 等级 max/high/none，钉死后忽略客户端 effort。三处字段（thinking.type +
-    // reasoning_effort + output_config.effort）对称写入，确保 z.ai 无论读哪个都一致：
+    // reasoning_effort + output_config.effort）对称写入，确保上游无论读哪个都一致：
     //   none  → thinking.disabled + reasoning_effort=none + effort=none（不思考）
     //   max/high → thinking.enabled + reasoning_effort=level + effort=level
     const level =
@@ -122,7 +124,7 @@ module.exports = {
       if (obj.system.length === 0) delete obj.system;
     }
 
-    // tools 尾部打 cache_control（触发 z.ai context caching）
+    // tools 尾部打 cache_control（触发 GLM context caching）
     if (Array.isArray(obj.tools) && obj.tools.length > 0) {
       const last = obj.tools[obj.tools.length - 1];
       if (last && typeof last === 'object') {

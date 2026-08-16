@@ -24,9 +24,9 @@ Code's `/effort` has **no effect on the upstream model's actual thinking level**
 whichever tier you pick. It also supports **multiple API keys with automatic
 failover**.
 
-> **Currently implemented:** `glm` (z.ai GLM-5.3), `ds` (DeepSeek-V4), `mimo`
-> (Xiaomi MiMo). `kimi` / `qwen` are reserved placeholders — see
-> [Adding a new upstream](#adding-a-new-upstream).
+> **Currently implemented:** `glm` (GLM-5.3 on z.ai / Zhipu bigmodel.cn), `ds`
+> (DeepSeek-V4), `mimo` (Xiaomi MiMo). `kimi` / `qwen` are reserved
+> placeholders — see [Adding a new upstream](#adding-a-new-upstream).
 
 Install it once and start it from **any directory** with a single command:
 `cc-bridge`.
@@ -35,7 +35,7 @@ Install it once and start it from **any directory** with a single command:
 
 | upstream | status | adapter | target model |
 |----------|--------|---------|--------------|
-| `glm` | ✅ implemented | [glm-bridge/](glm-bridge/) | GLM-5.3 on z.ai |
+| `glm` | ✅ implemented | [glm-bridge/](glm-bridge/) | GLM-5.3 (z.ai / Zhipu bigmodel.cn) |
 | `ds` | ✅ implemented | [ds-bridge/](ds-bridge/) | DeepSeek-V4 (pro / flash) |
 | `mimo` | ✅ implemented | [mimo-bridge/](mimo-bridge/) | MiMo-V2.5-Pro (Xiaomi) |
 | `kimi` | 🚧 reserved | [kimi-bridge/](kimi-bridge/) | — |
@@ -61,8 +61,10 @@ Install it once and start it from **any directory** with a single command:
   `API_KEY=k1,k2` still works). When a key returns `401`/`403` (rejected /
   exhausted), the bridge marks it blocked for 60 s and immediately retries with
   the next key. Transient errors (`429`/`5xx`/network) are first retried on the
-  same key, then fall over. The URL never changes — only the key rotates. (See
-  [Multi-key failover](#multi-key-failover).)
+  same key, then fall over. Keys are tried in `API_KEY_n_PRIORITY` order
+  (highest first, numeric order as fallback), so a primary key is used until it
+  trips its breaker and backups only serve as failover. The URL never changes —
+  only the key rotates. (See [Multi-key failover](#multi-key-failover).)
 - **Per-upstream isolation.** Each upstream has its own config
   (`~/.cc-bridge/<upstream>.env`), pid file, and log file, so several upstreams
   can run as daemons side by side (use different `PROXY_PORT`s).
@@ -132,11 +134,15 @@ API_BASES=zai->https://api.z.ai/api/anthropic,cn->https://open.bigmodel.cn/api/a
 # KEY_NAME  = display name for per-key usage stats (cc-bridge stats); must be
 #            unique within the config — the key itself is never shown or stored.
 # KEY_BASE  = which API_BASES endpoint this key uses (default: the first one).
-# account A (z.ai Coding Plan)
+# KEY_PRIORITY = non-negative integer; the highest-priority key is used first,
+#            lower ones only kick in when it trips its breaker (failover order).
+#            Omit everywhere to keep the numeric order (legacy behavior).
+# account A (z.ai Coding Plan, primary)
 API_KEY_1=your_zai_key_1
 API_KEY_1_NAME=zai-work
 API_KEY_1_BASE=zai
-# account B (Zhipu bigmodel.cn)
+API_KEY_1_PRIORITY=10
+# account B (Zhipu bigmodel.cn, backup)
 API_KEY_2=your_zhipu_key_2
 API_KEY_2_NAME=zhipu-cn
 API_KEY_2_BASE=cn
@@ -246,6 +252,12 @@ works). They share one `API_BASE`. The bridge decides when to rotate per request
   least-bad one is still tried.
 - **Transient errors don't block keys.** A `5xx` or network blip is the gateway's
   problem, not the key's — no key is penalized.
+- **Key priority.** Each key may carry `API_KEY_n_PRIORITY` (a non-negative
+  integer). Keys are tried highest-priority-first; ties keep the numeric order,
+  and keys without a priority act as `0`. This makes the rotation order a
+  primary/backup arrangement: the top key serves all traffic until it trips its
+  breaker, and once its 60 s block expires the bridge returns to it
+  automatically. Omit `PRIORITY` everywhere to keep the plain numeric order.
 - **Bounded retries.** Each request tries at most `keys × (1 + 2 retries)` calls,
   so failover always terminates.
 
@@ -297,7 +309,7 @@ etc.
 | `core/daemon.js`         | background process management (per-upstream pid + log) |
 | `core/claude.js`         | start bridge + launch `claude` through it          |
 | `core/util.js`           | port cleanup / health probe / readiness wait       |
-| `glm-bridge/adapter.js`  | GLM (z.ai GLM-5.3) adapter — body adaptation, per-model thinking, model caps |
+| `glm-bridge/adapter.js`  | GLM (z.ai / Zhipu bigmodel.cn) adapter — body adaptation, per-model thinking, model caps |
 | `ds-bridge/adapter.js`   | DeepSeek (DeepSeek-V4) adapter — body adaptation, per-model thinking |
 | `mimo-bridge/adapter.js` | MiMo (Xiaomi MiMo-V2.5-Pro) adapter — body adaptation, per-model thinking switch |
 | `kimi-bridge/`, `qwen-bridge/` | reserved placeholders (adapter + README)    |

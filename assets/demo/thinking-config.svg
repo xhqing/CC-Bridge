@@ -21,10 +21,10 @@
 
   <g font-size="13">
     <text x="60" y="178" fill="#8b949e"># 模型路由（spoof → target 多对）</text>
-    <text x="60" y="202"><tspan fill="#d29922">MODEL_MAP</tspan><tspan fill="#8b949e">=</tspan><tspan fill="#e6edf3">claude-opus-4-8-&gt;</tspan><tspan fill="#3fb950">glm-5.2</tspan><tspan fill="#e6edf3">,claude-haiku-4-5-&gt;</tspan><tspan fill="#e6edf3">glm-4.6</tspan></text>
+    <text x="60" y="202"><tspan fill="#d29922">MODEL_MAP</tspan><tspan fill="#8b949e">=</tspan><tspan fill="#e6edf3">claude-opus-4-8-&gt;</tspan><tspan fill="#3fb950">glm-5.3</tspan><tspan fill="#e6edf3">,claude-haiku-4-5-&gt;</tspan><tspan fill="#e6edf3">glm-4.6</tspan></text>
 
     <text x="60" y="232" fill="#8b949e"># 按模型思考等级（可配 max / high / none）</text>
-    <text x="60" y="256"><tspan fill="#d29922">MODEL_THINKING</tspan><tspan fill="#8b949e">=</tspan><tspan fill="#e6edf3">glm-5.2-&gt;</tspan><tspan fill="#3fb950">max</tspan><tspan fill="#e6edf3">,glm-4.6-&gt;</tspan><tspan fill="#484f58">none</tspan></text>
+    <text x="60" y="256"><tspan fill="#d29922">MODEL_THINKING</tspan><tspan fill="#8b949e">=</tspan><tspan fill="#e6edf3">glm-5.3-&gt;</tspan><tspan fill="#3fb950">max</tspan><tspan fill="#e6edf3">,glm-4.6-&gt;</tspan><tspan fill="#484f58">none</tspan></text>
 
     <text x="60" y="286" fill="#8b949e"># 未列出模型的兜底等级</text>
     <text x="60" y="310"><tspan fill="#d29922">MODEL_THINKING_DEFAULT</tspan><tspan fill="#8b949e">=</tspan><tspan fill="#3fb950">max</tspan><tspan fill="#484f58">   # 默认 max（可改 high/none）</tspan></text>
@@ -57,7 +57,7 @@
   <!-- bottom: per-model outcomes -->
   <g>
     <rect x="40" y="440" width="330" height="150" rx="12" fill="#0f2f1f" stroke="#3fb950"/>
-    <text x="60" y="472" font-size="14" fill="#3fb950">glm-5.2 → <tspan fill="#d29922">max</tspan></text>
+    <text x="60" y="472" font-size="14" fill="#3fb950">glm-5.3 → <tspan fill="#d29922">max</tspan></text>
     <text x="60" y="502" font-size="12.5" fill="#8b949e">thinking.type     = enabled</text>
     <text x="60" y="526" font-size="12.5" fill="#8b949e">reasoning_effort  = max</text>
     <text x="60" y="550" font-size="12.5" fill="#8b949e">output_config.effort = max</text>

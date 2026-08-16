@@ -25,12 +25,12 @@
   <text x="60" y="246" font-size="13.5" fill="#8b949e">api base      : </text><text x="210" y="246" font-size="13.5" fill="#58a6ff">https://api.z.ai/api/anthropic</text>
 
   <text x="60" y="280" font-size="13.5" fill="#8b949e">model map     : </text><text x="210" y="280" font-size="13.5" fill="#e6edf3">3 pair(s)  <tspan fill="#484f58">(first pair = main model)</tspan></text>
-  <text x="60" y="304" font-size="13.5" fill="#8b949e">  main #1  </text><text x="160" y="304" font-size="13.5" fill="#d29922">claude-opus-4-8 → glm-5.2</text>
+  <text x="60" y="304" font-size="13.5" fill="#8b949e">  main #1  </text><text x="160" y="304" font-size="13.5" fill="#d29922">claude-opus-4-8 → glm-5.3</text>
   <text x="60" y="328" font-size="13.5" fill="#8b949e">       #2  </text><text x="160" y="328" font-size="13.5" fill="#d29922">claude-haiku-4-5 → glm-4.6</text>
   <text x="60" y="352" font-size="13.5" fill="#8b949e">       #3  </text><text x="160" y="352" font-size="13.5" fill="#d29922">claude-sonnet-5 → glm-4.7</text>
 
   <text x="60" y="384" font-size="13.5" fill="#8b949e">thinking      : </text><text x="210" y="384" font-size="13.5" fill="#e6edf3">per-model  <tspan fill="#484f58">(default=adapter max)</tspan></text>
-  <text x="210" y="408" font-size="13.5" fill="#d29922">glm-5.2 → max</text><text x="360" y="408" font-size="13.5" fill="#8b949e">glm-4.6 → none</text><text x="490" y="408" font-size="13.5" fill="#8b949e">glm-4.7 → none</text>
+  <text x="210" y="408" font-size="13.5" fill="#d29922">glm-5.3 → max</text><text x="360" y="408" font-size="13.5" fill="#8b949e">glm-4.6 → none</text><text x="490" y="408" font-size="13.5" fill="#8b949e">glm-4.7 → none</text>
 
   <text x="60" y="440" font-size="13.5" fill="#8b949e">API_KEYs      : </text><text x="210" y="440" font-size="13.5" fill="#3fb950">2</text>
   <text x="60" y="464" font-size="13.5" fill="#8b949e">  #1       </text><text x="160" y="464" font-size="13.5" fill="#d29922">3527d5***</text>
