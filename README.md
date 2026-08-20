@@ -11,7 +11,7 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Built with Claude Code](https://img.shields.io/badge/Built%20with-Claude%20Code-19C37D)
 ![Type: Project](https://img.shields.io/badge/Type-Project-lightgrey)
-<img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/xhqing/xhqing/main/traffic/badges/CC-BRIDGE.json" alt="Visitors" />
+<img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/xhqing/xhqing/main/traffic/badges/CC-BRIDGE.json" alt="Visits/day (14d)" />
 
 </div>
 
@@ -69,6 +69,14 @@ Install it once and start it from **any directory** with a single command:
 - **Per-upstream isolation.** Each upstream has its own config
   (`~/.cc-bridge/<upstream>.env`), pid file, and log file, so several upstreams
   can run as daemons side by side (use different `PROXY_PORT`s).
+- **Usage stats with a local GUI.** `cc-bridge stats` opens a local browser
+  dashboard (127.0.0.1, one-time token) where you pick a start/end time — or a
+  quick window (today / last 7 days / last 30 days / all) — and see input
+  tokens, cache-hit tokens, cache hit rate and output tokens aggregated by
+  key-name and by model, merged across all upstreams. Usage is persisted in
+  hourly buckets (`~/.cc-bridge/stats-<upstream>.json`, 30-day rolling
+  retention, survives daemon restarts), so the dashboard works even when the
+  daemon is stopped. `cc-bridge stats --text` keeps the terminal-only view.
 - **Zero runtime dependencies.** Node ≥ 14 built-ins only.
 
 ## How it works
@@ -171,8 +179,9 @@ cc-bridge claude [args]   # start bridge + launch claude pointed at it
 cc-bridge stop            # stop the background service
 cc-bridge restart         # restart the background service (stop + start)
 cc-bridge status          # show running status
-cc-bridge stats           # token / cache-hit stats for ALL upstreams (by key & model)
-cc-bridge <upstream> stats  # stats for one upstream
+cc-bridge stats           # open the local stats GUI in your browser (time window, by key & model)
+cc-bridge stats --text    # terminal-only stats (no GUI)
+cc-bridge <upstream> stats  # stats GUI (merged view across upstreams)
 cc-bridge logs            # tail the bridge log (Ctrl-C to exit)
 cc-bridge health          # probe /health
 cc-bridge set default upstream [name]  # show / set the default upstream
@@ -304,9 +313,11 @@ etc.
 | path                     | purpose                                            |
 |--------------------------|----------------------------------------------------|
 | `bin/cc-bridge.js`       | CLI entry — `[upstream] <command>` dispatch        |
-| `core/server.js`         | the bridge server: model rewrite, multi-key failover, modelUsage injection |
+| `core/server.js`         | the bridge server: model rewrite, multi-key failover, modelUsage injection, hourly-bucket usage stats |
 | `core/adapter.js`        | upstream registry + adapter loader                 |
 | `core/config.js`         | per-upstream config find / edit / import / show    |
+| `core/stats.js`          | usage-stats snapshot reader + time-window aggregation (CLI text & GUI) |
+| `core/gui.js` + `core/gui.html` | local stats dashboard: 127.0.0.1 one-time-token server + browser page |
 | `core/daemon.js`         | background process management (per-upstream pid + log) |
 | `core/claude.js`         | start bridge + launch `claude` through it          |
 | `core/util.js`           | port cleanup / health probe / readiness wait       |
@@ -316,6 +327,7 @@ etc.
 | `kimi-bridge/`, `qwen-bridge/` | reserved placeholders (adapter + README)    |
 | `<name>-bridge/<name>.env.example` | per-upstream config template (GLM / DeepSeek / MiMo filled; Kimi/Qwen reserved) |
 | `~/.cc-bridge/<upstream>.env` | real config (yours, gitignored, never packaged) |
+| `~/.cc-bridge/stats-<upstream>.json` | usage stats snapshot (hourly buckets, survives restarts; feeds `cc-bridge stats`) |
 | `~/.cc-bridge/default-upstream` | user-set default upstream (created by `set default upstream`; absent = built-in `ds`) |
 
 ## Notes / caveats

@@ -145,23 +145,26 @@ function startServer(cfg, adapter) {
   const KEYS = cfg.KEYS || [];
   const VERBOSE = cfg.VERBOSE;
 
-  // --- 按模型 / 按 KEY token 统计（跨请求累计，`cc-bridge stats` 读取） ------------
-  // 两个维度各一张表：
-  //   stats.models[key]   按 target 模型：请求数 + 输入 / 输出 / 缓存命中 / 缓存创建合计
-  //   stats.keys[keyName]  按 KEY 统计名（API_KEY_n_NAME，未配则 #n）：同上口径
-  // 按 KEY 维度用于用量归因（哪个账号用了多少），KEY 本体绝不落盘——只落 key-name。
-  // 输入口径与 formatCacheUsage 一致（Anthropic 风格三者相加 ≈ 总输入，OpenAI 风格
-  // prompt_tokens 已含 cached）——按两种风格二选一分支累计，保证命中率 = 命中 / 总输入
-  // 的口径在单请求与跨请求汇总之间一致。
-  // 持久化：内存累计 + 节流写盘到 ~/.cc-bridge/stats-<upstream>.json（随 config 目录，
-  // 兼容 $CC_BRIDGE_CONFIG 覆盖），daemon 停掉后 CLI 仍能读到最近快照。
+  // --- 按小时分桶的用量统计（跨请求累计、跨进程续存，`cc-bridge stats` GUI 读取） ------
+  // 两个维度各一张表（每个小时桶各一套）：
+  //   hours[hk].models[model]   按 target 模型：请求数 + 输入 / 输出 / 缓存命中 / 缓存创建合计
+  //   hours[hk].keys[keyName]   按 KEY 统计名（API_KEY_n_NAME，未配则 #n）：同上口径
+  // hk 为 UTC 整点 key（如 "2026-08-20T04"，桶代表 [04:00, 05:00)）。按 KEY 维度用于
+  // 用量归因（哪个账号用了多少），KEY 本体绝不落盘——只落 key-name。输入口径与
+  // formatCacheUsage 一致（Anthropic 风格三者相加 ≈ 总输入，OpenAI 风格 prompt_tokens
+  // 已含 cached）——按两种风格二选一分支累计，保证命中率 = 命中 / 总输入 的口径在
+  // 单请求与跨请求汇总之间一致。
+  // 持久化：内存实时累计 + 节流写盘到 ~/.cc-bridge/stats-<upstream>.json（随 config
+  // 目录，兼容 $CC_BRIDGE_CONFIG 覆盖）。启动时载入既有历史（跨进程续存、重启不再
+  // 清零），旧格式（顶层 models/keys 进程累计）迁移为起点所在小时的一个桶；滚动保留
+  // STATS_RETENTION_HOURS，过期小时桶在每次写盘时清理。
   const STATS_FILE = statsPathFor(cfg.upstream, cfg.configPath);
+  const STATS_RETENTION_HOURS = 24 * 30; // 滚动保留 30 天（GUI 最长快捷窗口）
   const stats = {
     upstream: cfg.upstream,
-    startedAt: new Date().toISOString(),  // 本次进程的统计起点（重启即重置）
+    version: 2,
     updatedAt: null,
-    models: {},
-    keys: {},
+    hours: {},
   };
   let statsDirty = false;
   let lastStatsFlush = 0;
@@ -169,7 +172,39 @@ function startServer(cfg, adapter) {
     requests: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheCreatedTokens: 0,
   });
 
-  // 把一次上游响应的 usage 累计进 bucket（stats.models[model] / stats.keys[keyName]）。
+  // UTC 整点 key（"YYYY-MM-DDTHH"）；任意 ISO 时间转桶 key，无效输入返回 null。
+  const hourKeyNow = () => new Date().toISOString().slice(0, 13);
+  const hourKeyOf = (iso) => {
+    const t = new Date(iso);
+    return isNaN(t.getTime()) ? null : t.toISOString().slice(0, 13);
+  };
+  const hourBucket = (hk) => (stats.hours[hk] ||= { models: {}, keys: {} });
+
+  // 清掉保留窗口之外的小时桶（写盘前调用；启动载入后也调一次）。
+  function pruneOldHours() {
+    const cutoff = Date.now() - STATS_RETENTION_HOURS * 3600 * 1000;
+    for (const hk of Object.keys(stats.hours)) {
+      const t = Date.parse(`${hk}:00:00Z`);
+      if (!isNaN(t) && t < cutoff) delete stats.hours[hk];
+    }
+  }
+
+  // 启动载入历史：v2（hours 分桶）直接续用；旧格式（顶层 models/keys 累计、重启即
+  // 重置）把总量迁移成 startedAt 所在小时的一个桶——历史总量保住，时间粗化到该小时。
+  (function loadStatsHistory() {
+    try {
+      const prev = JSON.parse(fs.readFileSync(STATS_FILE, 'utf-8'));
+      if (prev && prev.hours && typeof prev.hours === 'object') {
+        stats.hours = prev.hours;
+      } else if (prev && (prev.models || prev.keys)) {
+        const hk = hourKeyOf(prev.startedAt);
+        if (hk) stats.hours[hk] = { models: prev.models || {}, keys: prev.keys || {} };
+      }
+    } catch { /* 首次使用或文件损坏 → 从零开始 */ }
+    pruneOldHours();
+  })();
+
+  // 把一次上游响应的 usage 累计进 bucket（hourBucket.models[model] / .keys[keyName]）。
   // usage 结构未知时只记请求数。partial=true：流式末尾 message_delta.usage——Anthropic
   // 规范里它只含输出侧统计（output_tokens，部分上游还带 cache_creation_input_tokens），
   // 只补充累计、不重复计请求数（同一请求的请求数已在 message_start 计过）。
@@ -221,13 +256,15 @@ function startServer(cfg, adapter) {
     }
   }
 
-  // recordUsage 的入口：同一份 usage 同时累计进「按模型」与「按 KEY」两张表。
-  // keyName 为空（异常情况）时只累计按模型表。base 是 message_start 前的两表快照
-  // {models, keys}（各自可能为 null），按维度分发。详见 recordInto 的 partial / base 语义。
+  // recordUsage 的入口：同一份 usage 同时累计进当前小时桶的「按模型」与「按 KEY」
+  // 两张表。keyName 为空（异常情况）时只累计按模型表。base 是 message_start 前的
+  // 两表快照 {models, keys}（各自可能为 null），按维度分发。详见 recordInto 的
+  // partial / base 语义。
   function recordUsage(model, keyName, usage, partial, base) {
     if (!usage || typeof usage !== 'object') return;
-    if (model) recordInto(stats.models[model] ||= zeroBucket(), usage, partial, base && base.models);
-    if (keyName) recordInto(stats.keys[keyName] ||= zeroBucket(), usage, partial, base && base.keys);
+    const hb = hourBucket(hourKeyNow());
+    if (model) recordInto(hb.models[model] ||= zeroBucket(), usage, partial, base && base.models);
+    if (keyName) recordInto(hb.keys[keyName] ||= zeroBucket(), usage, partial, base && base.keys);
     stats.updatedAt = new Date().toISOString();
     statsDirty = true;
     maybeFlushStats();
@@ -240,6 +277,7 @@ function startServer(cfg, adapter) {
     if (!force && now - lastStatsFlush < STATS_FLUSH_MS) return;
     lastStatsFlush = now;
     try {
+      pruneOldHours();
       fs.writeFileSync(STATS_FILE, JSON.stringify(stats, null, 2));
       statsDirty = false;
     } catch (e) {
@@ -538,8 +576,9 @@ function startServer(cfg, adapter) {
                   const snap = (b) => b
                     ? { inputTokens: b.inputTokens, cacheHitTokens: b.cacheHitTokens, cacheCreatedTokens: b.cacheCreatedTokens }
                     : null;
-                  const m0 = currentTarget && stats.models[currentTarget];
-                  const k0 = currentKeyName && stats.keys[currentKeyName];
+                  const hb = hourBucket(hourKeyNow());
+                  const m0 = currentTarget && hb.models[currentTarget];
+                  const k0 = currentKeyName && hb.keys[currentKeyName];
                   msgStartBase = { models: snap(m0), keys: snap(k0) };
                   recordUsage(currentTarget, currentKeyName, u);
                   const cu = formatCacheUsage(u);

@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cc-bridge · 用量统计</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --ink: #1f2328; --muted: #6b7280;
+    --line: #e5e7eb; --accent: #3b82f6; --num: #175cd3;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.6 -apple-system, "SF Pro Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  header {
+    background: var(--card); border-bottom: 1px solid var(--line);
+    padding: 14px 24px; display: flex; flex-wrap: wrap; gap: 16px; align-items: center;
+    position: sticky; top: 0; z-index: 2;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header h1 .tag { color: var(--muted); font-weight: 400; font-size: 13px; margin-left: 8px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .controls label { color: var(--muted); font-size: 13px; }
+  input[type="datetime-local"] {
+    font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px;
+    background: #fff; color: var(--ink);
+  }
+  button {
+    font: inherit; padding: 5px 12px; border: 1px solid var(--line); border-radius: 6px;
+    background: #fff; cursor: pointer; color: var(--ink);
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:hover { filter: brightness(0.97); }
+  .quick { display: flex; gap: 6px; }
+  .quick button.active { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  main { max-width: 1100px; margin: 0 auto; padding: 20px 24px 40px; }
+  .meta { color: var(--muted); font-size: 13px; margin: 4px 0 16px; }
+  .meta b { color: var(--ink); font-weight: 600; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 16px;
+  }
+  .card .k { color: var(--muted); font-size: 12px; }
+  .card .v { font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .card .v small { font-size: 12px; font-weight: 400; color: var(--muted); margin-left: 2px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px 20px; margin-bottom: 20px; overflow-x: auto; }
+  section h2 { font-size: 14px; margin: 0 0 10px; font-weight: 600; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { padding: 7px 10px; text-align: right; white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  thead th { color: var(--muted); font-weight: 500; font-size: 12px; border-bottom: 1px solid var(--line); }
+  tbody tr:nth-child(even) { background: #fafbfc; }
+  tbody tr.total td { border-top: 1px solid var(--line); font-weight: 650; }
+  td.n { font-variant-numeric: tabular-nums; }
+  td.hit { color: var(--num); font-variant-numeric: tabular-nums; }
+  .empty { color: var(--muted); padding: 24px 0; text-align: center; }
+  footer { color: var(--muted); font-size: 12px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>cc-bridge 用量统计<span class="tag" id="upstreams"></span></h1>
+  <div class="controls">
+    <label for="from">起始</label>
+    <input type="datetime-local" id="from">
+    <label for="to">终止</label>
+    <input type="datetime-local" id="to">
+    <button class="primary" id="apply">查询</button>
+    <div class="quick" id="quick">
+      <button data-days="1">今天</button>
+      <button data-days="7">近 7 天</button>
+      <button data-days="30">近 30 天</button>
+      <button data-days="">全部</button>
+    </div>
+  </div>
+</header>
+<main>
+  <div class="meta" id="meta"></div>
+  <div class="cards" id="cards"></div>
+  <section>
+    <h2>按 KEY（key-name）</h2>
+    <div id="keys"></div>
+  </section>
+  <section>
+    <h2>按模型（upstream / model）</h2>
+    <div id="models"></div>
+  </section>
+  <footer>
+    口径：input = 输入 token 合计（已含缓存命中）；hit% = cache-hit / input；
+    命中率只计 server 侧能解析 usage 的请求（上游未返回 usage 的请求仅计入 reqs）。
+    时间粒度为小时桶：窗口边界上的小时整桶计入。数据来自 ~/.cc-bridge/stats-&lt;upstream&gt;.json 快照（daemon 停止也可查询）。
+  </footer>
+</main>
+<script>
+'use strict';
+
+// URL 里的 token 由本地服务校验（防跨站探测），所有请求原样带上。
+const TOKEN = new URLSearchParams(location.search).get('token') || '';
+
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => (n || 0).toLocaleString('en-US');
+const hitPct = (inp, hit) => (inp > 0 ? (hit / inp * 100).toFixed(1) + '%' : '-');
+
+// datetime-local 的值是本地时区（无秒）："YYYY-MM-DDTHH:MM"。查询时按本地时区解释、
+// 转成 ISO 交给服务端；初始化默认窗口 = 近 7 天。
+function localToISO(v) { return v ? new Date(v).toISOString() : ''; }
+
+function setQuickDefault(days) {
+  const now = new Date();
+  const from = new Date(now.getTime() - days * 24 * 3600 * 1000);
+  $('from').value = toLocalInput(from);
+  $('to').value = toLocalInput(now);
+  for (const b of $('quick').querySelectorAll('button')) {
+    b.classList.toggle('active', b.dataset.days === String(days));
+  }
+}
+
+function toLocalInput(d) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+async function load(fromISO, toISO) {
+  const q = new URLSearchParams();
+  if (fromISO) q.set('from', fromISO);
+  if (toISO) q.set('to', toISO);
+  if (TOKEN) q.set('token', TOKEN);
+  let data;
+  try {
+    const res = await fetch(`/api/stats?${q}`);
+    data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.status);
+  } catch (e) {
+    $('meta').textContent = `加载失败：${e.message}（服务是否已退出？终端里 Ctrl-C 会关闭 GUI 服务）`;
+    return;
+  }
+  render(data);
+}
+
+function render(data) {
+  const keys = Object.entries(data.keys || {}).filter(([, s]) => s.requests > 0).sort(([a], [b]) => a.localeCompare(b));
+  const models = Object.entries(data.models || {}).filter(([, s]) => s.requests > 0).sort(([a], [b]) => a.localeCompare(b));
+
+  $('upstreams').textContent = data.upstreams.length ? `· ${data.upstreams.join(' + ')}` : '';
+
+  const wFrom = data.window && data.window.from ? new Date(data.window.from).toLocaleString() : '-';
+  const wTo = data.window && data.window.to ? new Date(data.window.to).toLocaleString() : '-';
+  $('meta').innerHTML = `窗口内数据覆盖：<b>${wFrom}</b> → <b>${wTo}</b>（请求范围 ${data.window && data.window.requestedFrom ? new Date(data.window.requestedFrom).toLocaleString() : '不限'} → ${data.window && data.window.requestedTo ? new Date(data.window.requestedTo).toLocaleString() : '不限'}）`;
+
+  const total = keys.length || models.length
+    ? [keys, models].flat().reduce((t, [, s]) => ({
+        requests: t.requests + s.requests, inputTokens: t.inputTokens + s.inputTokens,
+        outputTokens: t.outputTokens + s.outputTokens, cacheHitTokens: t.cacheHitTokens + s.cacheHitTokens,
+      }), { requests: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0 })
+    : { requests: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0 };
+  // total 上面把 keys 与 models 各加了一遍（同一笔用量两个维度），除回 2。
+  for (const k of Object.keys(total)) total[k] = Math.round(total[k] / 2);
+
+  $('cards').innerHTML = `
+    <div class="card"><div class="k">请求数</div><div class="v">${fmt(total.requests)}</div></div>
+    <div class="card"><div class="k">输入 Token</div><div class="v">${fmt(total.inputTokens)}</div></div>
+    <div class="card"><div class="k">缓存命中 Token</div><div class="v">${fmt(total.cacheHitTokens)}</div></div>
+    <div class="card"><div class="k">缓存命中率</div><div class="v">${hitPct(total.inputTokens, total.cacheHitTokens)}</div></div>
+    <div class="card"><div class="k">输出 Token</div><div class="v">${fmt(total.outputTokens)}</div></div>
+  `;
+
+  $('keys').innerHTML = keys.length ? tableHTML(keys) : `<div class="empty">窗口内无按 KEY 数据</div>`;
+  $('models').innerHTML = models.length ? tableHTML(models) : `<div class="empty">窗口内无按模型数据</div>`;
+}
+
+function tableHTML(rows) {
+  const total = rows.reduce((t, [, s]) => ({
+    requests: t.requests + (s.requests || 0), inputTokens: t.inputTokens + (s.inputTokens || 0),
+    outputTokens: t.outputTokens + (s.outputTokens || 0), cacheHitTokens: t.cacheHitTokens + (s.cacheHitTokens || 0),
+  }), { requests: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0 });
+  const tr = rows.map(([label, s]) => `
+    <tr>
+      <td>${escapeHTML(label)}</td>
+      <td class="n">${fmt(s.requests)}</td>
+      <td class="n">${fmt(s.inputTokens)}</td>
+      <td class="n">${fmt(s.cacheHitTokens)}</td>
+      <td class="hit">${hitPct(s.inputTokens, s.cacheHitTokens)}</td>
+      <td class="n">${fmt(s.outputTokens)}</td>
+    </tr>`).join('');
+  return `
+  <table>
+    <thead><tr>
+      <th>名称</th><th>reqs</th><th>输入 Token</th><th>缓存命中</th><th>命中率</th><th>输出 Token</th>
+    </tr></thead>
+    <tbody>
+      ${tr}
+      <tr class="total">
+        <td>total</td>
+        <td class="n">${fmt(total.requests)}</td>
+        <td class="n">${fmt(total.inputTokens)}</td>
+        <td class="n">${fmt(total.cacheHitTokens)}</td>
+        <td class="hit">${hitPct(total.inputTokens, total.cacheHitTokens)}</td>
+        <td class="n">${fmt(total.outputTokens)}</td>
+      </tr>
+    </tbody>
+  </table>`;
+}
+
+function escapeHTML(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// 事件：查询按钮 / 快捷窗口。
+$('apply').addEventListener('click', () => {
+  for (const b of $('quick').querySelectorAll('button')) b.classList.remove('active');
+  load(localToISO($('from').value), localToISO($('to').value));
+});
+for (const b of $('quick').querySelectorAll('button')) {
+  b.addEventListener('click', () => {
+    const days = b.dataset.days;
+    for (const x of $('quick').querySelectorAll('button')) x.classList.remove('active');
+    b.classList.add('active');
+    if (days === '') {
+      $('from').value = ''; $('to').value = '';
+      load('', '');
+    } else {
+      setQuickDefault(Number(days));
+      load(localToISO($('from').value), localToISO($('to').value));
+    }
+  });
+}
+
+// 初始化：默认近 7 天窗口。
+setQuickDefault(7);
+load(localToISO($('from').value), localToISO($('to').value));
+</script>
+</body>
+</html>

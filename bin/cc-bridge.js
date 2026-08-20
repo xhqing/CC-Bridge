@@ -8,6 +8,7 @@ const { loadConfig, validate, editConfig, showConfig, importConfig, configPathFo
 const { startServer } = require('../core/server');
 const { startDaemon, stopDaemon, restartDaemon, statusDaemon, tailLog } = require('../core/daemon');
 const { showStats } = require('../core/stats');
+const { startGui } = require('../core/gui');
 const { runWithClaude } = require('../core/claude');
 const { probeHealth } = require('../core/util');
 const { DEFAULT_UPSTREAM, getDefaultUpstream, setDefaultUpstream, clearDefaultUpstream, listUpstreams, isKnown, isImplemented, loadAdapter } = require('../core/adapter');
@@ -33,8 +34,10 @@ Commands:
   cc-bridge stop                  stop background service
   cc-bridge restart               restart background service (stop + start)
   cc-bridge status                show running status
-  cc-bridge stats                 show token / cache-hit stats for ALL upstreams (by key & model)
-  cc-bridge <upstream> stats      show stats for one upstream
+  cc-bridge stats                 open the local stats GUI in your browser (time-window filter, by key & model)
+  cc-bridge stats --text          terminal-only stats for ALL upstreams (no GUI)
+  cc-bridge <upstream> stats      open the stats GUI (all-upstream merged view)
+  cc-bridge <upstream> stats --text  terminal stats for one upstream
   cc-bridge logs                  tail the bridge log (Ctrl-C to exit)
   cc-bridge health                probe /health
   cc-bridge config                edit config in $EDITOR
@@ -154,14 +157,20 @@ async function main() {
       break;
 
     case 'stats': {
-      // 聚合模式：裸 `cc-bridge stats`（未显式写上游、未带 --config）合并所有上游的
-      // 快照一起呈现；单上游模式：显式 `cc-bridge <upstream> stats` 或带 --config，
-      // 看该上游明细。
-      if (!explicit && !cfgPath && !process.env.CC_BRIDGE_CONFIG) {
-        showStats(null);
-      } else {
-        showStats(loadConfig({ upstream, configPath: cfgPath }));
+      // 默认弹本地 GUI（浏览器面板：起止时间可选、按 key-name / model 两维呈现输入 /
+      // 缓存命中 / 命中率 / 输出）；--text 走原终端文本模式。聚合 / 单上游模式对 GUI
+      // 同样适用（GUI 内为跨上游合并视图，单上游选择在页面里通过窗口与维度自然呈现）。
+      const textMode = sub.includes('--text') || sub.includes('-t');
+      if (textMode) {
+        if (!explicit && !cfgPath && !process.env.CC_BRIDGE_CONFIG) {
+          showStats(null);
+        } else {
+          showStats(loadConfig({ upstream, configPath: cfgPath }));
+        }
+        break;
       }
+      const { cfg } = loadOrThrow(upstream, cfgPath);
+      await startGui({ basePort: cfg.PORT + 1 });
       break;
     }
 

@@ -2,6 +2,24 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 新增（用量统计 GUI：时间窗口查询 + 按维度呈现）
+
+- **为什么改**：用户要求 `cc-bridge stats` 直接弹出用量统计 GUI，且 GUI 里要能选择起始 / 终止时间、呈现相应时间段内按 model-id / key-name 维度的输入 Token、缓存命中 Token、缓存命中率与输出 Token。原有 stats 只有终端文本、数据模型是「每 daemon 进程一份累计、重启即清零」，既没有 GUI、也无法按时间窗口查询——必须先改数据层才有历史可查。
+- **改了什么**：
+  - **数据层改按小时分桶持久化**（`core/server.js`）：stats 结构从顶层 `models`/`keys` 进程累计改为 `hours[hk].models/.keys` 小时桶（hk 为 UTC 整点 key，如 `"2026-08-20T04"`，桶代表 `[04:00, 05:00)`）；启动时载入既有快照跨进程续存（**daemon 重启不再清零**）；旧格式（v1 进程累计）自动迁移为 startedAt 所在小时的一个桶（历史总量保住、时间粗化到小时）；滚动保留 30 天（`STATS_RETENTION_HOURS`，写盘前清理过期桶）；`stats.version` 标 2。usage 归因口径（Anthropic / OpenAI 两种风格、message_start / message_delta 双时点、base 回退估算）与命中数计算逻辑完全不变，只是累计目标从进程级两张表变为当前小时桶里的两张表。
+  - **聚合层新增时间窗口聚合**（`core/stats.js`）：`aggregate(fromISO, toISO)` 把窗口内（按桶起点、闭区间、边界小时整桶计入）的小时桶合并成「按 KEY（跨上游同名合并、兜底名 #n 撞名加 `<upstream>` 前缀消歧）」与「按模型（`upstream/model` 标签）」两维表；`normalizedHours()` 统一 v1 / v2 快照视图（读盘兼容旧文件）；CLI 文本模式 `showStats()` 重写为走聚合层（窗口为全量），输出窗口行从「per-daemon-process windows merged」改为「hourly buckets, daemon restarts preserved」。
+  - **本地 GUI 服务**（新增 `core/gui.js`）：`cc-bridge stats` 起临时 HTTP 服务（仅绑 127.0.0.1，端口从 `PROXY_PORT+1` 顺延找空闲，最多试 20 个）、生成一次性随机 token（URL 查询参数校验、不带 / 错 token 一律 403，防本机其它页面跨站探测）、自动打开系统默认浏览器（macOS `open` / Windows `start` / Linux `xdg-open`，打不开则打印 URL 手动开）、Ctrl-C 退出。数据接口 `GET /api/stats?from=&to=` 复用 `aggregate()`，daemon 停着也能查（读快照文件）。
+  - **GUI 页面**（新增 `core/gui.html`，零依赖单文件）：顶部起止时间选择器（`datetime-local`，本地时区）+「查询」按钮 + 快捷窗口（今天 / 近 7 天 / 近 30 天 / 全部，默认近 7 天）；概览卡片五枚（请求数 / 输入 Token / 缓存命中 Token / 缓存命中率 / 输出 Token）；「按 KEY（key-name）」与「按模型（upstream / model）」两张表，列与 CLI 文本模式一致（reqs / input / cache-hit / hit% / output + total 行）；页脚标注口径与小时桶粒度说明。
+  - **CLI 接入**（`bin/cc-bridge.js`）：`cc-bridge stats` 默认弹 GUI；新增 `--text`（或 `-t`）参数保留原终端文本模式（单上游 / 聚合模式判断不变）；HELP 与 README（中英双语同步）更新。
+  - 实测：窗口过滤单测 11 项全过（v1/v2 兼容、闭区间边界、单侧窗口、空窗口）；端到端过桥请求验证 v1 快照迁移 + 新请求计入新桶 + SIGTERM 落盘 v2；GUI 服务 token 校验（带 token 200 / 无 token 403 / 错 token 403 / 未知路径 403）；Chrome headless 截图确认页面渲染正常（表格数据完整对齐、无乱码）。
+
+### 变更（Visitors 徽章更名 Visits/day (14d)：alt 文本与 xhqing 集中统计新 label 对齐）
+
+- **为什么改**：用户要求（2026-08-17）访问量徽章名需表达「最近半月日均访问量」口径——xhqing 集中统计侧的 badge JSON label 已从 `Visitors` 改为 `Visits/day (14d)`（`Visits/day` 是 shields.io 表达日均的惯例写法、`(14d)` 标注 14 天滚动窗口），各仓 README 的徽章 alt 文本同步对齐，避免 alt 与徽章实际显示文字脱节。
+- **改了什么**：README 徽章区 `alt="Visitors"` → `alt="Visits/day (14d)"`，仅改 alt 文本，endpoint URL、数据源、徽章口径均不变（口径改动记 xhqing 仓库 CHANGELOG，本仓只改 alt）。
+
 ## [2.10.1] - 2026-08-16
 
 ### Fixed
