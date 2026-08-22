@@ -17,6 +17,11 @@ const configDir = () => DIR;
 const configPathFor = (upstream) => path.join(DIR, `${upstream}.env`);
 const pidPathFor = (upstream) => path.join(DIR, `${upstream}.pid`);
 const logPathFor = (upstream) => path.join(DIR, `${upstream}.log`);
+// dashboard（本地用量面板）的 pid / url / 日志：跨上游共用一份（面板聚全部上游数据，
+// 起第二个没有意义）。url 文件兼作后台子进程的「就绪信号」——监听成功后写入。
+const dashboardPidPath = () => path.join(DIR, 'dashboard.pid');
+const dashboardUrlPath = () => path.join(DIR, 'dashboard.url');
+const dashboardLogPath = () => path.join(DIR, 'dashboard.log');
 
 // 按模型 token 统计文件路径：与 config / log / pid 同处（~/.cc-bridge/ 下按上游区分）。
 // configPath 传入实际生效的配置文件路径（兼容 $CC_BRIDGE_CONFIG / --config 覆盖），
@@ -93,42 +98,11 @@ function parseModelMap(rawMap, rawSpoof, rawTarget) {
 
 // 解析按模型的思考等级配置为 { map, defaultLevel }。紧凑映射写法：
 //   MODEL_THINKING="modelA->levelA,modelB->levelB"
-// level 取值仅限 max / high / none（none=不思考），覆盖整个上游的思考行为：每个 target
-// 模型钉死一个等级，忽略 Claude Code 传来的 /effort 档位。MODEL_THINKING_DEFAULT 为未列出
-// 模型的兜底等级（不配则返回 null，由 server 用 adapter.defaultThinking 补齐，GLM 默认 max）。
-// 格式错误抛 Error（非法 level / 缺边 / 空 entry），loadConfig 捕获并入 validate 报告，
-// 保持不抛契约。
-function parseModelThinking(rawMap, rawDefault) {
-  // 支持两种风格的思考等级：
-  //   GLM: max / high / none
-  //   MiMo: enabled / disabled
-  const LEVELS = ['max', 'high', 'none', 'enabled', 'disabled'];
-  const map = {};
-  const m = (rawMap || '').trim();
-  if (m) {
-    for (const part of m.split(',')) {
-      const seg = part.trim();
-      if (!seg) continue;
-      const arrow = seg.indexOf('->');
-      if (arrow === -1) {
-        throw new Error(`invalid entry "${seg}" — expected "model->level"`);
-      }
-      const model = seg.slice(0, arrow).trim();
-      const level = seg.slice(arrow + 2).trim().toLowerCase();
-      if (!model || !level) {
-        throw new Error(`invalid entry "${seg}" — both model and level are required around '->'`);
-      }
-      if (!LEVELS.includes(level)) {
-        throw new Error(`invalid level "${level}" in "${seg}" — must be one of: ${LEVELS.join(', ')}`);
-      }
-      map[model] = level;
-    }
-  }
-  const def = (rawDefault || '').trim().toLowerCase();
-  if (def && !LEVELS.includes(def)) {
-    throw new Error(`invalid MODEL_THINKING_DEFAULT "${def}" — must be one of: ${LEVELS.join(', ')}`);
-  }
-  return { map, defaultLevel: def || null };
+// ——已废弃（2026-08-22 T11：思考钉死功能下线，/effort 档位原样透传、由上游按官方
+// 映射解读）。保留空实现仅为兼容旧配置文件里可能残留的 MODEL_THINKING 行：静默忽略，
+// 不再产生任何效果。后续大版本可连本函数一起删。
+function parseModelThinking() {
+  return { map: {}, defaultLevel: null };
 }
 
 // 解析 API_BASES="name->url,name->url" 为 [{name, url}]（多端点，如 GLM 同时配
@@ -158,20 +132,22 @@ function parseApiBases(raw) {
 }
 
 // 收集所有 API KEY，支持两种写法（可混用、合并去空、不去重），返回对象数组
-// [{ idx, value, name, baseName, priority }]：
-//   idx      编号变量的数字（错误信息定位用）
-//   value    KEY 本体
-//   name     KEY_NAME_n 统计展示名（可空；空时展示用 #idx 兜底）
-//   baseName KEY_n_BASE 绑定的 API_BASES 端点名（可空；空时用第一个端点）
-//   priority KEY_n_PRIORITY 优先级（正整数，越大越先用；未配视为 0）
+// [{ idx, value, name, baseName, priorityRaw, hideUserIdRaw }]：
+//   idx           编号变量的数字（错误信息定位用）
+//   value         KEY 本体
+//   name          KEY_NAME_n 统计展示名（可空；空时展示用 #idx 兜底）
+//   baseName      KEY_n_BASE 绑定的 API_BASES 端点名（可空；空时用第一个端点）
+//   priorityRaw   KEY_n_PRIORITY 优先级（正整数，越大越先用；未配视为 0）
+//   hideUserIdRaw KEY_n_HIDE_USER_ID 隐私选项（'1' = 该 KEY 清空 metadata.user_id）
 //   1) 编号变量 API_KEY_1 / API_KEY_2 / API_KEY_3 …（推荐）。每个 KEY 独立成行，可单独
 //      写注释标注账号来源（如「# 工作账号」「# 个人账号」），也可单独注释掉整行来临时
 //      禁用某个 KEY——比在一长串逗号串里增删值方便得多。编号按数字大小升序排列（不是
 //      字典序，所以 API_KEY_10 仍排在 API_KEY_2 之后）。每个 KEY 的可选属性按同编号
-//      派生：API_KEY_1_NAME / API_KEY_1_BASE / API_KEY_1_PRIORITY 对应 API_KEY_1。
+//      派生：API_KEY_1_NAME / API_KEY_1_BASE / API_KEY_1_PRIORITY / API_KEY_1_HIDE_USER_ID
+//      对应 API_KEY_1。
 //   2) 旧式单变量 API_KEY=k1,k2,k3（逗号分隔，向后兼容）。若同时配了编号变量，老式
 //      API_KEY 的值会「追加」在编号变量之后，不会覆盖。旧式 KEY 无 NAME / BASE /
-//      PRIORITY 属性。
+//      PRIORITY / HIDE_USER_ID 属性。
 // process.env 与文件 env 都查（process.env 优先，与 get() 语义一致）。
 function collectKeys(env, get) {
   const re = /^API_KEY_\d+$/;
@@ -191,12 +167,13 @@ function collectKeys(env, get) {
       name: (get(`${n}_NAME`, '') || '').trim(),
       baseName: (get(`${n}_BASE`, '') || '').trim(),
       priorityRaw: (get(`${n}_PRIORITY`, '') || '').trim(),
+      hideUserIdRaw: (get(`${n}_HIDE_USER_ID`, '') || '').trim(),
     });
   }
   const legacy = get('API_KEY', '');
   if (legacy) {
     legacy.split(',').map((v) => v.trim()).filter(Boolean).forEach((v) => {
-      out.push({ idx: out.length + 1, value: v, name: '', baseName: '', priorityRaw: '' });
+      out.push({ idx: out.length + 1, value: v, name: '', baseName: '', priorityRaw: '', hideUserIdRaw: '' });
     });
   }
   return out;
@@ -221,6 +198,9 @@ function validateKeyAttrs(keys, apiBases) {
     }
     if (k.priorityRaw && !/^\d+$/.test(k.priorityRaw)) {
       errs.push(`API_KEY_${k.idx}_PRIORITY="${k.priorityRaw}" is not a non-negative integer`);
+    }
+    if (k.hideUserIdRaw && k.hideUserIdRaw !== '0' && k.hideUserIdRaw !== '1') {
+      errs.push(`API_KEY_${k.idx}_HIDE_USER_ID="${k.hideUserIdRaw}" is not 0 or 1`);
     }
   }
   return errs;
@@ -286,6 +266,8 @@ function loadConfig(opts = {}) {
         baseName: k.baseName || (API_BASES.length ? API_BASES[0].name : ''),
         base: baseEntry ? baseEntry.url : firstBase,
         priority: /^\d+$/.test(k.priorityRaw || '') ? parseInt(k.priorityRaw, 10) : 0,
+        // 隐私选项：'1' = 该 KEY 转发时清空 metadata.user_id；其余（未配 / '0'）透传。
+        hideUserId: k.hideUserIdRaw === '1',
         idx: k.idx,
       };
     })
@@ -301,18 +283,12 @@ function loadConfig(opts = {}) {
     modelMapError = e.message;
   }
 
-  // 按模型思考等级（MODEL_THINKING）。解析失败不抛——错误存入 thinkingError，由 validate
-  // 报给用户，保持 loadConfig「永不抛错」的契约。
-  let THINK_MAP = {};
-  let THINK_DEFAULT = null;
-  let thinkingError = null;
-  try {
-    const t = parseModelThinking(get('MODEL_THINKING', ''), get('MODEL_THINKING_DEFAULT', ''));
-    THINK_MAP = t.map;
-    THINK_DEFAULT = t.defaultLevel;
-  } catch (e) {
-    thinkingError = e.message;
-  }
+  // 按模型思考等级（MODEL_THINKING）——已废弃（2026-08-22 T11：思考钉死功能下线，/effort
+  // 档位原样透传）。旧配置文件里残留的 MODEL_THINKING / MODEL_THINKING_DEFAULT 行被静默
+  // 忽略，不再产生任何效果。THINK_MAP 恒空、THINK_DEFAULT 恒 null，字段保留仅为不破坏
+  // 下游（server / adapter）的读取契约，后续大版本可一并删。
+  const THINK_MAP = {};
+  const THINK_DEFAULT = null;
 
   return {
     upstream,
@@ -324,7 +300,8 @@ function loadConfig(opts = {}) {
     API_BASE: firstBase,
     // 全部 KEY（对象数组）：value=KEY 本体、name=统计展示名（KEY_NAME_n 或 #idx）、
     // baseName/base=该 KEY 使用的端点名与 URL、priority=优先级（大者先用，已按降序
-    // 排好）。KEY 轮换在 KEYS 间进行（顺序即优先级顺序），跨端点容灾。
+    // 排好）、hideUserId=隐私选项（true 时该 KEY 清空 metadata.user_id）。
+    // KEY 轮换在 KEYS 间进行（顺序即优先级顺序），跨端点容灾。
     KEYS,
     API_KEY: KEYS[0] ? KEYS[0].value : '', // 首个 KEY，向后兼容只读单 KEY 的旧代码
     // 模型映射：[{spoof, target}, ...]。空数组 → server 用 adapter 默认单对兜底。
@@ -342,12 +319,10 @@ function loadConfig(opts = {}) {
     AGNES_API_KEY: get('AGNES_API_KEY', ''),
     AGNES_MODEL_PRIMARY: get('AGNES_MODEL_PRIMARY', 'agnes-2.5-flash'),
     AGNES_MODEL_FALLBACK: get('AGNES_MODEL_FALLBACK', 'agnes-2.0-flash'),
-    // 按模型思考等级：{ modelId: level(max/high/none) }。未列出的模型由 server 用
-    // adapter 默认等级兜底。THINK_DEFAULT=null → 用 adapter.defaultThinking（GLM 为 max）。
+    // 按模型思考等级——已废弃（T11），恒空 / 恒 null，仅为下游读取契约保留。
     THINK_MAP,
     THINK_DEFAULT,
     modelMapError,
-    thinkingError,
     apiBasesError,
     keyAttrErrors,
     configPath: file,
@@ -359,7 +334,6 @@ function validate(cfg) {
   if (!cfg.API_BASE) missing.push('API_BASE (or API_BASES)');
   if (!cfg.KEYS.length) missing.push('API_KEY_1 (or legacy API_KEY)');
   if (cfg.modelMapError) missing.push(`MODEL_MAP (${cfg.modelMapError})`);
-  if (cfg.thinkingError) missing.push(`MODEL_THINKING (${cfg.thinkingError})`);
   if (cfg.apiBasesError) missing.push(`API_BASES (${cfg.apiBasesError})`);
   for (const e of cfg.keyAttrErrors || []) missing.push(e);
   return missing;
@@ -437,7 +411,6 @@ function showConfig(upstream) {
   } else {
     console.log(`thinking      : (unset — all models use default ${cfg.THINK_DEFAULT || 'adapter max'})`);
   }
-  if (cfg.thinkingError) console.log(`MODEL_THINKING err : ${cfg.thinkingError}`);
   if (cfg.apiBasesError) console.log(`API_BASES err : ${cfg.apiBasesError}`);
   for (const e of cfg.keyAttrErrors || []) console.log(`KEY attr err  : ${e}`);
   console.log(`API_KEYs      : ${cfg.KEYS.length}`);
@@ -465,6 +438,7 @@ function resolvePairs(cfg, adapter) {
 
 module.exports = {
   configDir, configPathFor, pidPathFor, logPathFor, statsPathFor, templatePath,
+  dashboardPidPath, dashboardUrlPath, dashboardLogPath,
   parseEnv, parseApiBases, parseModelMap, parseModelThinking, resolvePairs, resolveConfigPath, loadConfig, validate,
   ensureConfig, importConfig, editConfig, showConfig, mask, ensureDir,
 };

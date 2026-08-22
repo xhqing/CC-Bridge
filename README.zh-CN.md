@@ -14,7 +14,7 @@
 
 </div>
 
-一个本地透明桥接框架，让 **Claude Code 访问第三方模型上游**（GLM / DeepSeek / MiMo ……）。每个上游在独立的 `<name>-bridge/` 目录下有一个 adapter 模块，共享同一套框架（`core/`）。**思考等级直接在 cc-bridge 的配置文件中配置**（`MODEL_THINKING`，见[按模型配思考等级](#按模型配思考等级glm--deepseek)）——Claude Code 的 `/effort` 选任何等级都不影响实际上游模型的思考等级；同时支持**多 API_KEY 容灾**。
+一个本地透明桥接框架，让 **Claude Code 访问第三方模型上游**（GLM / DeepSeek / MiMo ……）。每个上游在独立的 `<name>-bridge/` 目录下有一个 adapter 模块，共享同一套框架（`core/`）。思考字段原样透传——上游按各自官方映射表解读 Claude Code 的 `/effort` 档位（见[思考等级透传](#思考等级透传)）；同时支持**多 API_KEY 容灾**。
 
 > **当前已实现：** `glm`（GLM-5.3，z.ai 国际版 / 智谱 bigmodel.cn 国内版）、`ds`（DeepSeek-V4）、`mimo`（小米 MiMo）。`kimi` / `qwen` 为预留占位——见[添加新上游](#添加新上游)。
 
@@ -40,11 +40,10 @@ Claude Code 本身支持用纯配置指向自定义端点（`~/.claude/settings.
 除了让两头接上，桥还提供纯配置给不了的能力：
 
 - **多 KEY 容灾**：跨账号、跨端点轮换（见[多 KEY 容灾](#多-key-容灾)）。
-- **思考等级按模型钉死**（`MODEL_THINKING`），不受 Claude Code `/effort` 影响。
-- **按上游的请求体适配**——剥离上游会拒绝或无法识别的 Claude 专有字段
-  （`context_management`、`cache_control`、Anthropic 专有 system 段）、把
-  `max_tokens` 钳到模型真实上限、在支持缓存标记的上游给 `tools` 打
-  `cache_control` 触发上下文缓存。
+- **思考等级透传**——`/effort` 档位原样转发，上游按官方映射解读（GLM：xhigh/max → max；DeepSeek：max → max、xhigh → high；详见各桥配置模板）。
+- **请求体透传**——除 model 改写与少量功能性修复外，请求体与直连形态一致地原样
+  转发；`max_tokens` 钳到模型真实上限，`API_KEY_n_HIDE_USER_ID=1` 的 KEY 可清空
+  `metadata.user_id`（按 KEY 的隐私选项）。
 - **安全分类器路由**（`glm`）——Claude Code auto 模式的安全分类器每轮工具调用前都
   发请求（约是主对话 3 倍）且按全额模型倍率计费；可改走免费模型或本地零成本放行
   （`CLASSIFIER_MODE`）。
@@ -64,10 +63,10 @@ Claude Code 本身支持用纯配置指向自定义端点（`~/.claude/settings.
 
 ## 它能做什么
 
-- **框架 + 按上游分 adapter。** 所有与上游无关的通用逻辑（HTTP 服务、多 KEY 容灾、model 改写、modelUsage 注入、daemon）都在 [`core/`](core/)；每个上游的专属逻辑（请求体适配、思考等级映射、模型上限表）在各自的 `<name>-bridge/adapter.js`。新增上游只需加一个文件 + 注册表一行。
-- **请求体适配。** 每个 adapter 把 Anthropic 请求体改写成自己的上游真正接受的形式——剥离上游会拒绝或忽略的 Claude 专有字段（`context_management`、`cache_control`、Anthropic 专有 system 段）、把 `max_tokens` 钳到模型真实上限、在支持缓存标记的上游给 `tools` 打 `cache_control` 触发上下文缓存（各上游的完整适配清单见对应 `<name>-bridge/README.md`）。直连会把原请求原样发过去。
+- **框架 + 按上游分 adapter。** 所有与上游无关的通用逻辑（HTTP 服务、多 KEY 容灾、model 改写、modelUsage 注入、daemon）都在 [`core/`](core/)；每个上游的专属逻辑（请求体适配、模型上限表）在各自的 `<name>-bridge/adapter.js`。新增上游只需加一个文件 + 注册表一行。
+- **请求体透传。** adapter 的职责最小化：改写 `body.model`（spoof → target）、钳 `max_tokens` 到模型真实上限、只做真正功能性的修复（如 DeepSeek 的 tool 序列修复——不修该端点校验会 400）。其余一切（`context_management`、`cache_control`、Anthropic 专有 system 段、`metadata.user_id`、思考字段）按客户端原样转发、与直连形态一致（各上游清单见对应 `<name>-bridge/README.md`）。
 - **安全分类器路由（GLM）。** Claude Code auto 模式有个安全分类器，每次工具调用前都发一个请求（约是主对话请求数的 3 倍）且按全额模型倍率计费——实测占 z.ai Coding Plan 额度约 70%。`~/.cc-bridge/glm.env` 里的 `CLASSIFIER_MODE` 可把这些请求改走免费模型（`on`）或由桥本地伪造放行响应（`off`，默认——0 消耗，但无安全判断）。见 [glm-bridge/README.md](glm-bridge/README.md)。
-- **思考等级配置文件配置。** 每个 target 模型通过 `~/.cc-bridge/<upstream>.env` 里的 `MODEL_THINKING` 钉死一个思考等级（如 `max` / `high` / `none`，未列出的模型走 `MODEL_THINKING_DEFAULT`，默认 `max`）。思考等级由桥接配置决定，**Claude Code 的 `/effort` 选任何等级都不影响实际上游模型的思考等级**。（见[按模型配思考等级](#按模型配思考等级glm--deepseek)。）
+- **思考等级透传。** 桥不改写任何思考字段——`/effort` 档位原样转发，各上游按官方映射解读（GLM：xhigh/max → max；DeepSeek：max → max、xhigh → high；MiMo：任何思考档即开深度思考）。（见[思考等级透传](#思考等级透传)。）
 - **多 KEY 容灾。** 把多个 KEY 各自成行配成编号变量（`API_KEY_1=…`、`API_KEY_2=…`…，每行一个，方便单独注释账号来源、或整行注释掉禁用某 KEY；旧式逗号分隔 `API_KEY=k1,k2` 仍兼容）。某 KEY 返回 `401`/`403`（被拒 / 额度用尽）时，桥把它熔断 60 秒并立即切换下一个 KEY；瞬态错误（`429`/`5xx`/网络）先在同 KEY 重试、用尽再换。KEY 按 `API_KEY_n_PRIORITY` 优先级从高到低使用（不配则按编号顺序），主力 KEY 熔断才落备用、到期自动回切。URL 始终不变，只轮换 KEY。（见[多 KEY 容灾](#多-key-容灾)。）
 - **按上游隔离。** 每个上游有独立配置（`~/.cc-bridge/<upstream>.env`）、pid 文件、日志文件，多个上游可作为 daemon 并存（用不同 `PROXY_PORT`）。
 - **modelUsage 注入（真实上下文窗口）。** 在上游配置里设 `CONTEXT_WINDOW` / `MAX_OUTPUT_TOKENS` 后，桥给每条响应注入 `modelUsage`（spoof ID 与 target 双 key 命中），客户端显示的上下文窗口与真实模型一致——不注入的话，客户端会显示 spoof 模型的窗口。
@@ -198,14 +197,14 @@ cc-bridge claude -- -p "hello"   # 也接受 "--" 分隔符
   （桥接会轮换自己配置的 KEY；这里的 `ANTHROPIC_API_KEY` 只需非空，让 claude CLI 肯发请求。）
 - **持久：** 在 `~/.claude/settings.json` 的 `env` 块里设置 `ANTHROPIC_BASE_URL` 和 `ANTHROPIC_MODEL`。（此时 `claude` 只在桥接运行时才能用。）
 
-思考等级在 `~/.cc-bridge/<upstream>.env` 的 `MODEL_THINKING` 里配置（见[按模型配思考等级](#按模型配思考等级glm--deepseek)）——不需要在 `claude` 里设置 `/effort`，`/effort` 选任何等级都不影响实际上游模型的思考等级。桥接会记录每个请求，包括当前用的 KEY：
+思考等级无需配置——桥把 Claude Code 的 `/effort` 档位原样转发、上游按官方映射解读（见[思考等级透传](#思考等级透传)；GLM 想要 max 思考就选 xhigh 或 max，DeepSeek 选 max）。桥接会记录每个请求，包括当前用的 KEY：
 
 ```
 [bridge 2026-07-24T03:00:00.000Z] POST /v1/messages  model=claude-opus-4-8 → glm-5.3  effort=xhigh  stream=true  key=#1/2
 [bridge …]   ← 200  812ms  ct=text/event-stream  key=#1
 ```
 
-（日志里的 `effort` 字段只记录客户端传来的档位、仅供诊断——实际思考等级由 `MODEL_THINKING` 配置钉死。）
+（日志里的 `effort` 字段记录客户端传来的档位——原样转发给上游。）
 
 ## 多 KEY 容灾
 
@@ -223,9 +222,15 @@ cc-bridge claude -- -p "hello"   # 也接受 "--" 分隔符
 - **KEY 优先级。** 每个 KEY 可配 `API_KEY_n_PRIORITY`（非负整数）。KEY 按优先级从高到低依次使用；同优先级按编号顺序，未配视为 0。这样轮换顺序就成了「主力 / 备用」关系：最高优先级的 KEY 承接全部流量，直到它熔断才落到备用 KEY；熔断 60 秒到期后自动回切主力。全部不配 `PRIORITY` 则保持纯编号顺序（旧行为）。
 - **重试有界。** 每条请求最多尝试 `KEY 数 ×（1 + 2 次重试）` 次，容灾总会终止。
 
-## 按模型配思考等级（GLM / DeepSeek）
+## 思考等级透传
 
-每个 target 模型通过上游配置里的 `MODEL_THINKING` 钉死一个思考等级（如 `~/.cc-bridge/glm.env` 里 `MODEL_THINKING=glm-5.3->max,glm-4.6->none`，或 `~/.cc-bridge/ds.env` 里 `MODEL_THINKING=deepseek-v4-flash->max`），取值 `max` / `high` / `none`（`none` = 不思考）。⚠️ `none` 只在 GLM 等认「不思考」的上游可用；DeepSeek `/anthropic` 端点的 `output_config.effort` 枚举不认 `none`，配了请求会 400（2026-08-10 实测），只能配 `max` / `high`。每条请求 adapter 按 target 模型查等级，对称写入三个字段——`thinking.type`（`enabled`/`disabled`）、`reasoning_effort`、`output_config.effort`——从而钉死等级：Claude Code 的 `/effort` 选任何等级都不影响实际上游模型的思考等级。未列出的模型走 `MODEL_THINKING_DEFAULT`（默认 `max`，由 adapter 的 `defaultThinking` 设定）。
+桥不改写任何思考字段。Claude Code 的 `/effort` 档位（请求体里的 `thinking` / `output_config.effort`）原样转发，各上游按自己的官方映射解读：
+
+- **GLM-5.3**（docs.bigmodel.cn）：low / medium / high → high；xhigh / max / ultracode → max。默认档即 max。
+- **DeepSeek-V4**（V4-Flash-0731 / V4-Pro-0813，api-docs.deepseek.com）：两版本映射官方明文一致——low → low；medium / high / xhigh → high；max → max。Claude Code 类 Agent 请求会被端点自动设为 max。⚠️ 不认 `none`（400）。
+- **MiMo**：思考只有开 / 关两态，任何思考档（low 及以上）即开启深度思考。
+
+映射关系为 2026-08 版本口径、可能随模型版本变化——以官方文档为准（链接见各 `<name>-bridge/<name>.env.example`）。
 
 ## 添加新上游
 
@@ -233,7 +238,6 @@ CC-Bridge 就是为扩展而设计的。新增一个上游（如 `kimi`）：
 
 1. **创建 adapter** `kimi-bridge/adapter.js`，实现 adapter 接口（见 [glm-bridge/adapter.js](glm-bridge/adapter.js) 和 [core/adapter.js](core/adapter.js) 的注释）：
    - `name`、`displayName`、`defaultTarget`、`defaultSpoof`
-   - `defaultThinking`（默认思考等级：`max` / `high` / `none`）
    - `modelMaxTokens`（`{ 模型ID: 最大输出token }`）
    - `adaptRequestBody(obj, ctx)`——为该上游适配 Anthropic 请求体；`ctx = { target }`
 2. **注册** 在 [core/adapter.js](core/adapter.js) 里把 `kimi` 的 `implemented` 改为 `true`。
@@ -254,9 +258,9 @@ CC-Bridge 就是为扩展而设计的。新增一个上游（如 `kimi`）：
 | `core/daemon.js`          | 后台进程管理（按上游的 pid + 日志）                |
 | `core/claude.js`          | 启动桥接 + 通过它启动 `claude`                    |
 | `core/util.js`            | 端口清理 / health 探测 / 就绪等待                 |
-| `glm-bridge/adapter.js`   | GLM（z.ai / 智谱 bigmodel.cn）adapter——请求体适配、按模型配思考等级、模型上限表 |
-| `ds-bridge/adapter.js`    | DeepSeek（DeepSeek-V4）adapter——请求体适配、按模型配思考等级 |
-| `mimo-bridge/adapter.js`  | MiMo（小米 MiMo-V2.5-Pro）adapter——请求体适配、按模型配思考开关 |
+| `glm-bridge/adapter.js`   | GLM（z.ai / 智谱 bigmodel.cn）adapter——请求体适配、模型上限表 |
+| `ds-bridge/adapter.js`    | DeepSeek（DeepSeek-V4）adapter——请求体适配、tool 序列修复 |
+| `mimo-bridge/adapter.js`  | MiMo（小米 MiMo-V2.5-Pro）adapter——请求体适配、模型上限表 |
 | `kimi-bridge/`、`qwen-bridge/` | 预留占位（adapter + README）                |
 | `<name>-bridge/<name>.env.example` | 按上游的配置模板（GLM / DeepSeek / MiMo 已填；Kimi/Qwen 预留）  |
 | `~/.cc-bridge/<upstream>.env` | 真实配置（你的，gitignored，绝不打包）        |
@@ -265,11 +269,11 @@ CC-Bridge 就是为扩展而设计的。新增一个上游（如 `kimi`）：
 
 ## 注意 / 限制
 
-- 上游必须接受 `output_config.effort` / `reasoning_effort`，`MODEL_THINKING` 配置的思考等级才会生效。
 - 只有 `POST /v1/messages`（不含 `/v1/messages/count_tokens`）的 `model` 会被改写。其他路径原样转发。
 - **未知模型会被 HTTP 400 拒绝，绝不静默改写。**
 - `package.json` 的 `files` 排除了 `.env`；真实密钥绝不打包进全局安装。
-- 思考等级由桥接按 `MODEL_THINKING` 配置写入请求体钉死，Claude Code 的 `/effort` 选任何等级都不影响实际上游模型的思考等级；模型对思考参数实际怎么执行，取决于上游。
+- 思考字段原样转发；上游如何解读 `/effort` 档位由上游决定（各模型官方映射见配置模板）。
+- 请求体除 model 改写与各桥 README 列出的功能性修复外，按直连形态原样转发。这是设计选择而非合规声明——上游如何对待桥接流量完全取决于上游及其服务条款。
 
 ## 版本管理
 

@@ -18,12 +18,10 @@
 A local transparent bridge that lets **Claude Code talk to third-party model
 upstreams** (GLM / DeepSeek / MiMo …) through a single local endpoint. Each upstream
 lives in its own adapter module under a `<name>-bridge/` directory and shares the
-same framework (`core/`). **Thinking levels are configured directly in cc-bridge's
-config file** (`MODEL_THINKING`, see
-[Per-model thinking level](#per-model-thinking-level-glm--deepseek)) — Claude
-Code's `/effort` has **no effect on the upstream model's actual thinking level**,
-whichever tier you pick. It also supports **multiple API keys with automatic
-failover**.
+same framework (`core/`). Thinking fields pass through verbatim — the upstream
+interprets Claude Code's `/effort` tier by its own official mapping (see
+[Thinking level passthrough](#thinking-level-passthrough)). It also supports
+**multiple API keys with automatic failover**.
 
 > **Currently implemented:** `glm` (GLM-5.3 on z.ai / Zhipu bigmodel.cn), `ds`
 > (DeepSeek-V4), `mimo` (Xiaomi MiMo). `kimi` / `qwen` are reserved
@@ -56,12 +54,14 @@ give you:
 
 - **Multi-key failover** across accounts and endpoints (see
   [Multi-key failover](#multi-key-failover)).
-- **Pinned per-model thinking levels** (`MODEL_THINKING`), independent of
-  Claude Code's `/effort`.
-- **Request-body adaptation** per upstream — strips Claude-specific fields the
-  upstream would reject or choke on (`context_management`, `cache_control`,
-  Anthropic-only system blocks), clamps `max_tokens` to the model's real cap,
-  and tags `tools` for context caching where the upstream honours it.
+- **Thinking passthrough** — `/effort` tiers are forwarded verbatim and the
+  upstream applies its official tier mapping (GLM: xhigh/max → max; DeepSeek:
+  max → max, xhigh → high; see each bridge's config template).
+- **Request-body passthrough** — apart from the model rewrite and a couple of
+  functional fixes, request bodies are forwarded exactly as Claude Code sent
+  them (same shape as a direct connection); `max_tokens` is clamped to the
+  model's real cap, and `API_KEY_n_HIDE_USER_ID=1` blanks `metadata.user_id`
+  for keys where you prefer device identifiers not to leave your machine.
 - **Safety-classifier routing** (`glm`) — Claude Code's auto-mode security
   monitor fires ~3× per agent turn at full model rates; route it to a free
   model or answer it locally at zero cost (`CLASSIFIER_MODE`).
@@ -84,16 +84,17 @@ give you:
 
 - **Framework + per-upstream adapters.** All upstream-agnostic logic (HTTP
   server, multi-key failover, model rewriting, modelUsage injection, daemon) lives
-  in [`core/`](core/). Each upstream's quirks (body adaptation, thinking-level
-  mapping, model caps) live in its `<name>-bridge/adapter.js`. Adding an upstream
+  in [`core/`](core/). Each upstream's specifics (model caps, functional body
+  fixes) live in its `<name>-bridge/adapter.js`. Adding an upstream
   touches only one new file + one registry line.
-- **Request-body adaptation.** Each adapter rewrites the Anthropic request body
-  into what its upstream actually accepts — stripping Claude-specific fields
-  (`context_management`, `cache_control`, Anthropic-only system blocks) that the
-  upstream rejects or ignores, clamping `max_tokens` to the model's real cap,
-  and tagging `tools` for context caching where the upstream honours it (see
-  each `<name>-bridge/README.md` for the exact list). Direct connection would
-  send these fields raw.
+- **Request-body passthrough.** Each adapter's job is minimal: rewrite
+  `body.model` (spoof → target), clamp `max_tokens` to the model's real cap,
+  and apply genuinely functional fixes only (e.g. DeepSeek's tool-sequence
+  repair — the endpoint's validator would 400 otherwise). Everything else —
+  `context_management`, `cache_control`, Anthropic-only system blocks,
+  `metadata.user_id`, thinking fields — is forwarded exactly as the client
+  sent it, matching the shape of a direct connection (see each
+  `<name>-bridge/README.md`).
 - **Safety-classifier routing (GLM).** Claude Code's auto mode runs a security
   monitor that fires before every tool call (~3× the main conversation's request
   count) at full model rates — measured at ~70% of a z.ai Coding Plan quota.
@@ -101,13 +102,11 @@ give you:
   model (`on`) or answers them locally with a canned allow (`off`, the default —
   zero cost, no safety judgment). See
   [glm-bridge/README.md](glm-bridge/README.md).
-- **Thinking level configured per model.** Each target model gets a pinned
-  thinking level via `MODEL_THINKING` in `~/.cc-bridge/<upstream>.env` (e.g.
-  `max` / `high` / `none`; models not listed fall back to
-  `MODEL_THINKING_DEFAULT`, default `max`). The level is decided by the bridge
-  config — **Claude Code's `/effort` has no effect on the upstream model's
-  actual thinking level**, whichever tier you pick. (See
-  [Per-model thinking level](#per-model-thinking-level-glm--deepseek).)
+- **Thinking passthrough.** The bridge rewrites nothing about thinking —
+  `/effort` tiers are forwarded verbatim and each upstream applies its
+  official tier mapping (GLM: xhigh/max → max; DeepSeek: max → max, xhigh →
+  high; MiMo: any thinking tier = deep thinking on). (See
+  [Thinking level passthrough](#thinking-level-passthrough).)
 - **Multi-key failover.** Configure multiple keys as numbered variables
   (`API_KEY_1=…`, `API_KEY_2=…`, … — one per line, so each can carry its own
   comment and be disabled by commenting out the line; legacy comma-separated
@@ -294,11 +293,10 @@ won't use it automatically. Pick one:
   block of `~/.claude/settings.json`. (`claude` then only works while the bridge
   is running.)
 
-Configure the thinking level in `MODEL_THINKING` in
-`~/.cc-bridge/<upstream>.env` (see
-[Per-model thinking level](#per-model-thinking-level-glm--deepseek)) — you do
-**not** need to set `/effort` inside `claude`; whichever tier you pick, it has
-no effect on the upstream model's actual thinking level. The bridge logs each
+No thinking config is needed — the bridge forwards Claude Code's `/effort`
+tier verbatim and the upstream applies its official mapping (see
+[Thinking level passthrough](#thinking-level-passthrough); for max thinking on
+GLM pick xhigh or max, on DeepSeek pick max). The bridge logs each
 request, including the key in use:
 
 ```
@@ -306,8 +304,8 @@ request, including the key in use:
 [bridge …]   ← 200  812ms  ct=text/event-stream  key=#1
 ```
 
-(The `effort` field in the log merely records the tier the client sent, for
-diagnostics — the actual thinking level is pinned by `MODEL_THINKING`.)
+(The `effort` field in the log records the tier the client sent — it is
+forwarded verbatim to the upstream.)
 
 ## Multi-key failover
 
@@ -336,23 +334,29 @@ works). They share one `API_BASE`. The bridge decides when to rotate per request
   automatically. Omit `PRIORITY` everywhere to keep the plain numeric order.
 - **Bounded retries.** Each request tries at most `keys × (1 + 2 retries)` calls,
   so failover always terminates.
+- **Per-key privacy option.** Each key may carry `API_KEY_n_HIDE_USER_ID=1` —
+  requests forwarded with that key blank `metadata.user_id` (the device /
+  session identifier Claude Code attaches automatically). Unset or `0` keeps
+  the field verbatim. Useful when you'd rather device identifiers not leave
+  your machine; set per key independently.
 
-## Per-model thinking level (GLM / DeepSeek)
+## Thinking level passthrough
 
-Each target model gets a pinned thinking level via `MODEL_THINKING` in the
-upstream's config (e.g. `MODEL_THINKING=glm-5.3->max,glm-4.6->none` in
-`~/.cc-bridge/glm.env`, or `MODEL_THINKING=deepseek-v4-flash->max` in
-`~/.cc-bridge/ds.env`). Levels are `max` / `high` / `none` (`none` = no
-thinking). ⚠️ `none` works only on upstreams that accept "no thinking" (e.g.
-GLM); DeepSeek's `/anthropic` endpoint does not accept `none` in
-`output_config.effort` — a request fails with 400 (verified 2026-08-10), so
-use only `max` / `high` there. On every request the adapter looks up the target
-model's level and writes it to three fields in concert — `thinking.type`
-(`enabled`/`disabled`), `reasoning_effort`, and `output_config.effort` — so
-the level is pinned: Claude Code's `/effort` has no effect on the upstream
-model's actual thinking level. Models not listed fall back to
-`MODEL_THINKING_DEFAULT` (default `max`, set by `defaultThinking` in the
-adapter).
+The bridge does not rewrite thinking fields. Claude Code's `/effort` tier
+(`thinking` / `output_config.effort` in the request body) is forwarded
+verbatim, and each upstream interprets it by its own official mapping:
+
+- **GLM-5.3** (docs.bigmodel.cn): low/medium/high → high; xhigh/max/ultracode
+  → max. Default tier is max.
+- **DeepSeek-V4** (V4-Flash-0731 / V4-Pro-0813, api-docs.deepseek.com): the
+  mapping is identical for both models — low → low; medium/high/xhigh → high;
+  max → max. Claude Code-style agent requests are auto-set to max by the
+  endpoint. ⚠️ `none` is not accepted (400).
+- **MiMo**: thinking is on/off only; any thinking tier (low and above) turns
+  deep thinking on.
+
+Mappings are as of 2026-08 and may change per model version — check the
+official docs (links in each `<name>-bridge/<name>.env.example`).
 
 ## Adding a new upstream
 
@@ -362,7 +366,6 @@ CC-Bridge is built to grow. To add an upstream (e.g. `kimi`):
    interface (see [glm-bridge/adapter.js](glm-bridge/adapter.js) and the comments
    in [core/adapter.js](core/adapter.js)):
    - `name`, `displayName`, `defaultTarget`, `defaultSpoof`
-   - `defaultThinking` (default thinking level: `max` / `high` / `none`)
    - `modelMaxTokens` (`{ modelId: maxOutputTokens }`)
    - `adaptRequestBody(obj, ctx)` — adapt the Anthropic request body for this
      upstream; `ctx = { target }`
@@ -387,9 +390,9 @@ etc.
 | `core/daemon.js`         | background process management (per-upstream pid + log) |
 | `core/claude.js`         | start bridge + launch `claude` through it          |
 | `core/util.js`           | port cleanup / health probe / readiness wait       |
-| `glm-bridge/adapter.js`  | GLM (z.ai / Zhipu bigmodel.cn) adapter — body adaptation, per-model thinking, model caps |
-| `ds-bridge/adapter.js`   | DeepSeek (DeepSeek-V4) adapter — body adaptation, per-model thinking |
-| `mimo-bridge/adapter.js` | MiMo (Xiaomi MiMo-V2.5-Pro) adapter — body adaptation, per-model thinking switch |
+| `glm-bridge/adapter.js`  | GLM (z.ai / Zhipu bigmodel.cn) adapter — body adaptation, model caps |
+| `ds-bridge/adapter.js`   | DeepSeek (DeepSeek-V4) adapter — body adaptation, tool-sequence repair |
+| `mimo-bridge/adapter.js` | MiMo (Xiaomi MiMo-V2.5-Pro) adapter — body adaptation, model caps |
 | `kimi-bridge/`, `qwen-bridge/` | reserved placeholders (adapter + README)    |
 | `<name>-bridge/<name>.env.example` | per-upstream config template (GLM / DeepSeek / MiMo filled; Kimi/Qwen reserved) |
 | `~/.cc-bridge/<upstream>.env` | real config (yours, gitignored, never packaged) |
@@ -398,17 +401,19 @@ etc.
 
 ## Notes / caveats
 
-- The upstream must accept `output_config.effort` / `reasoning_effort` for the
-  `MODEL_THINKING` level configured to take effect.
 - Only `POST /v1/messages` (excluding `/v1/messages/count_tokens`) gets its
   `model` rewritten. Other paths (`/v1/models`, …) are forwarded unchanged.
 - **Unknown models are rejected with HTTP 400, not silently rewritten.**
 - `package.json` `files` excludes `.env`; real keys are never packaged into the
   global install.
-- The thinking level is pinned by the bridge from `MODEL_THINKING` config and
-  written into the request body; Claude Code's `/effort` has no effect on the
-  upstream model's actual thinking level. What the model actually does with the
-  thinking parameter is up to the upstream.
+- Thinking fields are forwarded verbatim; how the upstream interprets the
+  `/effort` tier is up to the upstream (official mappings per model in each
+  config template).
+- Request bodies are forwarded in the same shape a direct connection would
+  send, apart from the model rewrite and the functional fixes listed in each
+  bridge's README. This is a design choice, not a compliance claim — how any
+  upstream treats bridged traffic is entirely up to the upstream and its
+  terms of service.
 
 ## Versioning
 

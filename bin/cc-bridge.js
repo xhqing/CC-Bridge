@@ -4,11 +4,13 @@
 // cc-bridge — CLI entry point. Dispatches subcommands to core/* modules.
 // Usage: cc-bridge [upstream] <command> [args]. Upstream defaults to 'ds'.
 
+const fs = require('fs');
+const { spawn } = require('child_process');
 const { loadConfig, validate, editConfig, showConfig, importConfig, configPathFor } = require('../core/config');
 const { startServer } = require('../core/server');
 const { startDaemon, stopDaemon, restartDaemon, statusDaemon, tailLog } = require('../core/daemon');
 const { showStats } = require('../core/stats');
-const { startGui } = require('../core/gui');
+const { startGui, startDashboardBackground, stopDashboard, dashboardStatus } = require('../core/gui');
 const { runWithClaude } = require('../core/claude');
 const { probeHealth } = require('../core/util');
 const { DEFAULT_UPSTREAM, getDefaultUpstream, setDefaultUpstream, clearDefaultUpstream, listUpstreams, isKnown, isImplemented, loadAdapter } = require('../core/adapter');
@@ -36,10 +38,14 @@ Commands:
   cc-bridge status                show running status
   cc-bridge stats                 terminal usage stats for ALL upstreams (aggregated)
   cc-bridge <upstream> stats      terminal stats for one upstream
-  cc-bridge dashboard             open the local usage dashboard in your browser (time-window
-                                  filter, trend chart, by upstream / key & model detail)
+  cc-bridge dashboard             start the local usage dashboard in the background and open it
+                                  in your browser (time-window filter, trend chart, detail tables)
+  cc-bridge dashboard --fg        run the dashboard in the foreground (Ctrl-C to exit)
+  cc-bridge dashboard stop        stop the background dashboard
+  cc-bridge dashboard status      show whether the background dashboard is running
+  cc-bridge dashboard logs        tail the dashboard log (Ctrl-C to exit)
   cc-bridge stats --text          alias of plain 'stats' (terminal; kept for compatibility)
-  cc-bridge stats --gui           alias of 'dashboard' (opens the browser dashboard)
+  cc-bridge stats --gui           alias of 'dashboard' (background + browser)
   cc-bridge logs                  tail the bridge log (Ctrl-C to exit)
   cc-bridge health                probe /health
   cc-bridge config                edit config in $EDITOR
@@ -159,13 +165,18 @@ async function main() {
       break;
 
     case 'stats': {
-      // 默认终端文本模式（全部 / 单上游判断不变）；--gui 弹本地 dashboard（浏览器
-      // 面板：起止时间、趋势图、按上游 / KEY / 模型明细）。--text / -t 保留为兼容
-      // 别名（等价默认行为）。输出尾部提示 dashboard 命令。
+      // 默认终端文本模式（全部 / 单上游判断不变）；--gui 弹本地 dashboard（默认后台
+      // 起 + 自动开浏览器，等价 'dashboard' 命令）。--text / -t 保留为兼容别名（等价
+      // 默认行为）。输出尾部提示 dashboard 命令。
       const guiMode = sub.includes('--gui') || sub.includes('-g');
       if (guiMode) {
-        const { cfg } = loadOrThrow(upstream, cfgPath);
-        await startGui({ basePort: cfg.PORT + 1 });
+        const fg = sub.includes('--fg');
+        if (fg) {
+          const { cfg } = loadOrThrow(upstream, cfgPath);
+          await startGui({ basePort: cfg.PORT + 1, quit: true });
+          break;
+        }
+        await startDashboardBackground();
         break;
       }
       if (!explicit && !cfgPath && !process.env.CC_BRIDGE_CONFIG) {
@@ -177,12 +188,36 @@ async function main() {
     }
 
     case 'dashboard': {
-      // 本地 dashboard：浏览器面板（仅绑 127.0.0.1、一次性 token）。当前第一模块为
-      // 用量统计（概览卡、趋势图、按上游 / KEY / 模型明细），后续其它功能按模块追加
-      // （页面 .module 容器 + gui.js API_ROUTES 注册行，框架不动）。stats 终端输出会
-      // 提示本命令。
-      const { cfg } = loadOrThrow(upstream, cfgPath);
-      await startGui({ basePort: cfg.PORT + 1 });
+      // 本地 dashboard：浏览器面板（仅绑 127.0.0.1、一次性 token）。默认后台启动
+      // （detached 子进程，CLI 立即返回）+ 自动开浏览器；--fg 保留前台模式（Ctrl-C
+      // 退出）；dashboard stop / logs / status 管理后台实例。当前第一模块为用量统计
+      // （概览卡、趋势图、按上游 / KEY / 模型明细），后续其它功能按模块追加（页面
+      // .module 容器 + gui.js API_ROUTES 注册行，框架不动）。stats 终端输出会提示本命令。
+      const action = sub[0];
+      if (action === 'stop') { stopDashboard(); break; }
+      if (action === 'status') {
+        const st = dashboardStatus();
+        console.log(st.running
+          ? `[bridge] dashboard running (pid ${st.pid})  ${st.url || '(url file missing)'}`
+          : '[bridge] dashboard not running.');
+        process.exit(st.running ? 0 : 1);
+      }
+      if (action === 'logs') {
+        const { dashboardLogPath } = require('../core/config');
+        const lp = dashboardLogPath();
+        if (!fs.existsSync(lp)) { console.log(`[bridge] no log file at ${lp}`); break; }
+        const child = spawn('tail', ['-n', '50', '-f', lp], { stdio: 'inherit' });
+        for (const sig of ['SIGINT', 'SIGTERM']) {
+          process.on(sig, () => { child.kill(sig); process.exit(0); });
+        }
+        break;
+      }
+      if (action === '--fg') {
+        const { cfg } = loadOrThrow(upstream, cfgPath);
+        await startGui({ basePort: cfg.PORT + 1, quit: true });
+        break;
+      }
+      await startDashboardBackground();
       break;
     }
 

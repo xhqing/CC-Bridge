@@ -7,7 +7,7 @@
  * adapter 做请求体适配，按 MODEL_MAP（spoof→target 多对）把 body.model 改写为真实
  * 模型，转发到上游；响应原样回传（注入 modelUsage 让 webview 显示真实窗口）。
  *
- * 上游专属逻辑（GLM 的 thinking 归一化、reasoning_effort、请求体清洗等）由对应
+ * 上游专属逻辑（请求体适配、字段清洗等）由对应
  * adapter 提供（见 glm-bridge/adapter.js），框架层通过 adapter.adaptRequestBody 调用。
  *
  * 多 KEY 容灾：API_KEY 支持逗号分隔多个，某 KEY 返回 401/403（失效/欠费）时熔断
@@ -303,11 +303,6 @@ function startServer(cfg, adapter) {
     contextWindow: cfg.CONTEXT_WINDOW,
     maxOutputTokens: cfg.MAX_OUTPUT_TOKENS,
   }));
-  // 把按模型思考等级配置注入 adapter：modelThinking（按 target 等级表）+ thinkingDefault
-  // （MODEL_THINKING_DEFAULT，未配则用 adapter.defaultThinking）。adaptRequestBody 据此为
-  // 每个请求按 target 模型钉死思考等级（max/high/none），忽略客户端 effort。
-  adapter.modelThinking = cfg.THINK_MAP || {};
-  adapter.thinkingDefault = cfg.THINK_DEFAULT || adapter.defaultThinking;
   // 注入 apiBase（首个端点）供 adapter.makeUpstreamCall 派生 OpenAI 端点地址用。
   adapter.apiBase = cfg.API_BASE;
 
@@ -455,7 +450,10 @@ function startServer(cfg, adapter) {
           //（见 TITLE_PROMPT_LANG_FIXES），避免中文会话标题被模型照抄韩语示例。
           fixTitlePromptLanguage(obj);
           body = Buffer.from(JSON.stringify(obj), 'utf-8');
-          // 受 PROXY_DUMP=1 控制：dump 改写后的请求体（用于验证适配是否生效）
+          // 受 PROXY_DUMP=1 控制：dump 改写后的请求体（用于验证适配是否生效）。
+          // 注：dump 记录的是 adapter 改写后、KEY 级处理前的形态——API_KEY_n_HIDE_USER_ID
+          // 的 user_id 清空发生在稍后的 send(keyIdx)（KEY 选定才知道该不该清），dump 里
+          // 仍显示原值属预期，实际转发体已按当前 KEY 处理。
           if (process.env.PROXY_DUMP === '1' || cfg.DUMP) {
             try {
               // dump 目录跟随配置文件（默认 ~/.cc-bridge/dumps），与 log / pid 同处，
@@ -678,12 +676,20 @@ function startServer(cfg, adapter) {
         t0 = Date.now();
         const keyUp = keyUpstreams[keyIdx];
         currentKeyName = KEYS[keyIdx].name;
+        // 隐私选项（按 KEY）：该 KEY 配了 HIDE_USER_ID=1 时清空 metadata.user_id（设备 /
+        // 会话标识），其余 KEY 原样透传。在 KEY 选定处做（而非解析处），KEY 轮换 / 容灾
+        // 切换后行为跟着当前 KEY 走。
+        if (obj && KEYS[keyIdx].hideUserId && obj.metadata && 'user_id' in obj.metadata) {
+          obj.metadata.user_id = '';
+          body = Buffer.from(JSON.stringify(obj), 'utf-8');
+        }
         const upPath = keyUp.pathname.replace(/\/+$/, '') + clientReq.url;
         log(
           `${clientReq.method} ${clientReq.url}  ` +
           `model=${modelIn || '-'}${rewritten ? ' → ' + rewritten : ' (passthrough)'}  ` +
           `effort=${effort || '-'}  stream=${stream}  key=${KEYS[keyIdx].name}/${KEYS.length}` +
-          (KEYS.length > 1 || cfg.API_BASES.length > 1 ? `  base=${KEYS[keyIdx].baseName || 'default'}` : ''),
+          (KEYS.length > 1 || cfg.API_BASES.length > 1 ? `  base=${KEYS[keyIdx].baseName || 'default'}` : '') +
+          (KEYS[keyIdx].hideUserId ? '  user_id=hidden' : ''),
         );
 
         // adapter 接管路径：adapter 实现了 makeUpstreamCall 时，由 adapter 全权处理
@@ -861,9 +867,6 @@ function startServer(cfg, adapter) {
     }
     console.log(`[bridge] spoof → target : ${pairs.map((p) => `${p.spoof} → ${p.target}`).join('   |   ')}`);
     console.log(`[bridge] API keys     : ${KEYS.map((k) => k.name).join(', ')}`);
-    const thinkPerModel = Object.entries(adapter.modelThinking || {})
-      .map(([m, l]) => `${m}=${l}`).join(', ');
-    console.log(`[bridge] thinking     : default=${adapter.thinkingDefault}${thinkPerModel ? '  per-model: ' + thinkPerModel : ''}`);
     console.log(`[bridge] logging      : ${VERBOSE ? 'on' : 'off'}`);
   });
 

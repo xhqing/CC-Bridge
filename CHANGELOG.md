@@ -4,6 +4,63 @@
 
 ## [Unreleased]
 
+### 变更（T4 执行：请求体改全面透传——删四类剥离；新增按 KEY 隐私选项 HIDE_USER_ID）
+
+- **为什么改**：T4 方案定稿（见下条）裁定不加 `FIDELITY` 开关、透传即唯一行为：各剥离改写（`context_management` / Anthropic 专有 system 段 / `cache_control` 剥离 + tools 尾重打）的理由经 T6 直连基线实测与官方文档核对全部站不住——端点对不识别字段按忽略处理（剥离纯制造签名），tools 尾打标偏离直连形态且对智谱显式缓存有害；`metadata.user_id` 改为按 KEY 的隐私选项（`API_KEY_n_HIDE_USER_ID`，默认透传、配 1 清空），既保留「不希望设备标识离开本机」的隐私能力，又不强制全局偏离直连形态。开源仓库措辞纪律：功能文档一律中性表述（隐私偏好场景），不出现具体使用场景暗示。
+- **改了什么**：
+  - **三桥 adapter**：`glm-bridge/adapter.js` 与 `mimo-bridge/adapter.js` 重写为「透传 + 钳 max_tokens」两项（文件头加「透传原则」说明）；`ds-bridge/adapter.js` 同步删四类剥离、保留 `repairToolSequence`（功能性修复）与钳制。`stripCacheControl` 函数三处全删。
+  - **`core/config.js`**：`collectKeys` 新增 `API_KEY_n_HIDE_USER_ID` 收集（`hideUserIdRaw`）；`validateKeyAttrs` 校验值仅认 0/1（非法入 validate 报告）；`KEYS` 透出 `hideUserId` 布尔字段（未配 / 0 = false）。
+  - **`core/server.js`**：`send(keyIdx)` 内按**当前 KEY** 的 `hideUserId` 清空 `metadata.user_id` 并重序列化 body（KEY 轮换 / 容灾切换后行为跟 KEY 走），请求日志追加 `user_id=hidden` 标记；`PROXY_DUMP` 注释补「dump 记录 KEY 级处理前形态、user_id 原值属预期」说明。
+  - **五个 env 模板**：`API_KEY_n_HIDE_USER_ID` 中性说明（隐私选项，默认透传）+ glm/ds 加注释示例行。
+  - **文档**：三桥 README 适配表重写为「透传原则」节（glm/mimo 两项改写、ds 三项含 tool 序列修复 + 框架层按 KEY 处理说明）；主 README 中英——intro 与 What it does 的「Request-body adaptation / 请求体适配」改写为「Request-body passthrough / 请求体透传」、Multi-key failover 节补 per-key privacy option 条目、Notes 补「透传是设计选择而非合规声明」边界句；架构 bullet 的 quirks 措辞同步。
+- **实测验证**：三 adapter + config + server 模块加载正常；`hideUserId` 解析与校验单测通过（配 1 → true、不配 → false、非法值进 validate）；真实 KEY 端到端——透传配置（不配 HIDE）请求 200、dump 显示 `cache_control`（system 尾 + 消息块）与 `metadata.user_id` 原样保留、tools 无标（直连形态）；`HIDE_USER_ID=1` 配置请求 200、日志出现 `user_id=hidden`、转发体 user_id 已清空（send 内重序列化路径验证）。
+- **待观察**（验收标准，发布后生效）：智谱 key（zhipu-cn）`cache(anthropic)` 命中率不降应升（恢复 CC 原生缓存切分点）；zai key 命中率不变。
+- **兼容性**：破坏性变更（请求体形态变化：原被剥字段恢复透传；无配置迁移需求——`HIDE_USER_ID` 可选新增）；与 T11 同属下个 minor 版本的行为变更集。
+- **待办闭环**：T4 / T8 归档（T8 的 README 透传文档随 T4 同日落地：中英透传表述 + per-key privacy option + 非合规声明边界句全部就位）；T7（请求体改写审计工具）用户裁定放弃归档——T4 后请求体仅剩五项已知改写、均有明确存在理由，当前无需专用审计工具防漂移。TODO 清空，拟真度系列待办（T4/T6/T7/T8/T11）全部闭环。
+
+### 变更（T4 方案定稿：弃 FIDELITY 开关，透传即默认；user_id 按 KEY 配置隐藏）
+
+- **为什么改**：原 T4 方案是加 `FIDELITY` 开关（compat 现状默认 / faithful 形态对齐直连）。用户复盘后裁定（2026-08-22）：逐项审判 compat 的六处改写——剥 `context_management` / system 段 / `cache_control` / tools 尾重打标全部站不住（「端点不识别」= 忽略而非拒绝，剥离纯制造签名；tools 尾打标反而偏离 T6 实测的直连基线，且对智谱显式缓存有害、对 z.ai 隐式缓存无益）；钳 max_tokens 从不触发（CC 实发 64000 远低于上限）留着即可——**faithful 全面更优或持平，开关没有存在必要，直接改为最优行为**。唯一例外 `metadata.user_id`：定为**按 KEY 配置的隐私选项**——新增 `API_KEY_n_HIDE_USER_ID`（默认不配 = 透传；配 1 = 该 KEY 清空 user_id），供不希望设备标识离开本机的隐私偏好场景按 KEY 独立控制。开源仓库措辞纪律（2026-08-22 用户立）：本功能在仓库内文档一律只写中性技术语义、不出现具体使用场景暗示。
+- **改了什么**：`TODO.md` T4 按定稿重写（无开关，直接删三桥 adapter 的四类剥离逻辑；user_id 上移到 `core/server.js` 框架层按 KEY 处理，`collectKeys` 收集 + `validateKeyAttrs` 校验 + KEYS 透出 `hideUserId`）；T7 改名「请求体改写审计」（T4 后预期仅剩 model 改写 + 钳制 + 按需 user_id 清空 + DS tool 序列修复 + 标题修正）；T8 文档主题改为「请求体透传」原则。原 FIDELITY / FAITHFUL_PIN_THINKING / FAITHFUL_CLAMP_TOKENS 等配置项设计作废（后者已随 T11 失去意义）。
+- **边界**：本次为方案定稿（改 TODO），代码未动；T4 实现含验收标准——智谱 key 改后 `cache(anthropic)` 命中率不降（应升，恢复有效缓存切分点）、zai key 不变。
+
+### 变更（T11 执行：思考等级钉死功能整套下线，思考字段改为原样透传）
+
+- **为什么改**：2026-07-07 立项时的前提「CC VS Code 扩展 effort 枚举缺 max、须靠桥钉死思考」已消失（2.1.226 扩展 binary 实测枚举五档含 max、spoof ID `claude-opus-4-8` 带 `max_effort` capability）；且各上游官方文档均给出 CC `/effort` 档位的解读映射（GLM-5.3：low/medium/high→high、xhigh/max/ultracode→max、默认即 max；DeepSeek-V4-Flash-0731 与 V4-Pro-0813 官方明文映射一致：low→low、medium/high/xhigh→high、max→max、Agent 请求自动 max），透传链路已有官方保障。钉死功能失去存在理由，且写入直连流量不存在的顶层 `reasoning_effort` 字段构成拟真偏差（T6 实测直连无此字段）。用户裁定：功能下线、映射表注明在配置文件即可、用不到的字段不留在配置里防误导。
+- **改了什么**：
+  - **`core/config.js`**：`parseModelThinking` 清空为兼容空实现（旧配置残留 `MODEL_THINKING` 行静默忽略不报错）；删 `THINK_MAP`/`THINK_DEFAULT` 的解析赋值与 `thinkingError`（validate / show 两处消费同步删），返回对象中两字段保留为空 / null 仅为下游读取契约兼容。
+  - **`core/server.js`**：删启动时向 adapter 注入 `modelThinking`/`thinkingDefault` 的两行与 banner 的 `thinking:` 行；头注释「GLM 的 thinking 归一化」措辞改为「请求体适配」。
+  - **三桥 adapter（glm / ds / mimo）**：删 `adaptRequestBody` 里的思考字段写入块（三字段对称写入）、`mapEffortToGLM`/`mapEffortToDeepSeek`/`mapEffortToMiMo` 三个遗留函数、`defaultThinking` 导出字段；改写项注释改为「思考字段原样透传」。
+  - **`core/adapter.js`**：接口文档注释删 `defaultThinking` 条目、补透传说明。
+  - **五个配置模板**：`glm.env.example`（注：GLM-5.3 官方映射表 + 「/effort 必须选一个值、想始终 max 选 xhigh 或 max」+ 注明 2026-08 版本口径防将来映射变化误导）、`ds.env.example`（注：DeepSeek 官方映射表 + V4-Flash-0731 / V4-Pro-0813 两版本一致 + `none` 400 警告保留 + 提示 xhigh 在 DS 侧只到 high 与 GLM 不同）、`mimo.env.example`（注：两态开关、透传即开）、`kimi`/`qwen` 预留模板（注释同步）。所有模板的 `MODEL_THINKING` / `MODEL_THINKING_DEFAULT` 配置块整体删除（不留在配置文件防误导）。
+  - **文档**：三桥 README + 主 README 中英——删「按 target 模型钉死思考等级」特性条目与适配表行、`MODEL_THINKING` 字段说明；主 README 的「Per-model thinking level / 按模型配思考等级」节整体重写为「Thinking level passthrough / 思考等级透传」（含三上游官方映射表 + 版本口径提醒）；快速开始「配 MODEL_THINKING」步骤改为「无需配置、/effort 原样转发」；adapter 接口文档删 `defaultThinking`；文件表与注意事项同步。
+- **回归评估**（对照 CHANGELOG 历史条目）：① 2.6.0 引入 `MODEL_THINKING` 的「忽略 /effort 钉死」能力随功能整体下线——用户已裁定该能力失去存在理由（前提消失 + 官方映射保障），属有意回归；② 2.8.x「DS none=400」的配置边界说明：功能下线后桥不再写 `output_config.effort`，400 无从被桥触发，警告转为「CC 侧别把 effort 关到 none」的环境提示保留在 ds.env.example；③ 2.7.2「MiMo MODEL_THINKING 验证失败修复」、2.7.x「OpenAI 路径 reasoning_effort 透传」：随钉死机制一并消失，历史条目保留不改写；④ 拟真度待办（T4）相应简化——faithful 模式无需思考子开关（原 T5 已随功能取消），思考字段无条件透传。
+- **兼容性**：破坏性变更（`MODEL_THINKING` 配置不再生效、静默忽略）；下一版本 bump minor 并在 README 标注。实测：三 adapter 与 server 模块加载正常；生产 glm.env / ds.env（含残留 MODEL_THINKING 行）加载无错；`adaptRequestBody` 对 CC 原始请求体（thinking adaptive + output_config.effort）逐字段透传、不新增 `reasoning_effort`。
+
+### 变更（glm.env.example 注明 CC /effort → GLM 官方映射表；思考钉死功能立项移除）
+
+- **为什么改**：用户核实 CC VSCode 扩展（2.1.226）的 effort 枚举已与 CLI 对齐（binary 实测 `["low","medium","high","xhigh","max"]` 五档、spoof ID `claude-opus-4-8` 带 `max_effort` capability）——2026-07-07 立项时「VS Code 插件 max 不可用（枚举缺 max、静默回 high）、须靠桥钉死思考」的前提已消失；且 GLM 端点官方映射表（智谱文档：low/medium/high→high、xhigh/max/ultracode→max、默认档即 max）已保障 `/effort` 透传链路的 max 思考。钉死功能失去存在理由，且写入直连流量不存在的顶层 `reasoning_effort` 字段（T6 实测）构成拟真偏差。用户指示：思考等级映射关系表注明在 glm.env 配置文件中即可（即不靠桥钉死、档位透传 + 注释告知官方映射）。
+- **改了什么**：`glm.env.example` 顶部注释块补「不钉死（两项注释掉）即透传 CC /effort」的用法说明 + CC /effort → GLM 官方映射表（含出处 docs.bigmodel.cn 两处链接、「默认档即 max」的优先级说明）；`MODEL_THINKING` 配置块上方注释同步补交叉引用。TODO 立项：**T11** 移除思考等级钉死功能（全套 `MODEL_THINKING` / `MODEL_THINKING_DEFAULT` / 三字段对称写入 / mapEffort 遗留函数 / 注入与 banner / 三桥模板与 README，含 DS none=400 边界说明随功能下线一并删的回归评估、bump minor 标 breaking）；原 **T5**（faithful 思考钉死子开关）随功能移除而取消（T4 中相关表述同步改为「思考字段全透传」）。
+- **边界**：本次仅改 `glm.env.example` 注释与 TODO 立项，代码未动（`MODEL_THINKING` 仍可用，行为不变）；功能实体移除由 T11 执行。
+
+### 调研（T5 思考链路核实：faithful 关钉死后 max 思考如何保障——官方文档为准）
+
+- **为什么查**：T5 定案「faithful 默认关思考钉死」后留下关键问题——关掉后 GLM 还能不能用上 max 思考、是不是只靠 CC 的 `/effort`。用户指出此前凭本地实验下结论不如查官方文档（其记忆中 GLM-5.2 官方文档规定 `/effort xhigh` 可映射到 max）。
+- **查证结论**：用户记忆属实。智谱官方文档两处明文：① 「Claude Code」页（docs.bigmodel.cn/cn/guide/develop/claude）给出 effort 映射表——CC 选 `low/medium/high → GLM high`、`xhigh/max/ultracode → GLM max`，并推荐 Coding 任务切 `max` effort；② 「如何切换模型」页（docs.bigmodel.cn/cn/coding-plan/latest-model）写明 GLM-5.3 下 `/effort` **默认档即 max**、处理优先级「显式 effort > thinking 开关 > 默认 max」。即端点对 CC 流量的 effort 语义有官方承诺的解读规则——faithful 透传后 `/effort xhigh`（或 max）即得 max 思考，无需桥介入。此前本地 A/B 实测（adaptive+effort 各档梯度生效、budget_tokens 被忽略、冲突时 effort 优先）与官方口径一致，互为印证。
+- **改动**：核实结论回填 `TODO.md` T5（含官方映射表原文与两处文档出处），faithful 默认关钉死的定案不变——max 思考经官方映射链路保障。
+
+### 变更（T6 完成：实测 CC 直连基线请求体，回填拟真度待办）
+
+- **为什么改**：T4（`FIDELITY` 开关）与 T5（思考钉死 / 钳制子开关）的默认值依赖「CC 直连 GLM 端点时请求体长什么样」的客观事实——此前对「直连是否带顶层 `reasoning_effort`」「`cache_control` 打标分布」只有推断（TODO 里标注「待实测核实」），不抓基线就没法定 faithful 的正确形态。
+- **改了什么**：在 `tmp/baseline/`（git 忽略）本地起假 `/api/anthropic` 捕获端点（`capture.js` / `capture2.js`——后者首轮回 tool_use、次轮回文本，逼 CC 走完整工具回合），用 `CLAUDE_CONFIG_DIR` 隔离配置跑 `claude --print`（CC 2.1.226）两轮，原样落盘 CC 发出的请求（`cap2-01/02.json`）。**实测结论**：① 直连顶层**无** `reasoning_effort` 字段，思考控制形态为 `thinking={"type":"adaptive","display":"omitted"}` + `output_config={"effort":"high"}`——此前「钉死思考会写直连没有的字段」的推断证实，T5 faithful 默认关思考钉死定案；② `cache_control` 真实分布 = system 尾部 2 个 block + messages 里最后一条可缓存块（当前轮 tool_result 或上一轮 system 块），**tools 数组全程无 cache_control**——桥现状「全剥 + tools 尾重打」与基线双向偏离，T4 faithful 停打标、客户端原标透传即天然对齐；③ 直连恒带 `context_management`（clear_thinking_20251015）、`metadata.user_id`（device_id+session_id JSON）、`max_tokens=64000`（在 GLM 上限内，钳制实际不触发）——证实这些字段剥离均偏离基线；④ 头层面实测确认 UA / `x-stainless-*` 全套指纹（与此前分析一致）。结论已回填 `TODO.md` T4 / T5（T6 本体移入归档）。
+- **过程备注**：首次尝试用环境变量 `ANTHROPIC_BASE_URL` 覆盖失败——`~/.claude/settings.json` 的 `env` 块优先级更高，测试流量误打了生产桥（glm.log 留痕，无副作用）；改用 `CLAUDE_CONFIG_DIR` 指向隔离目录后成功。此坑对将来复测有参考价值：**抓 CC 原始请求必须隔离 CLAUDE_CONFIG_DIR，否则拿不到想要的目标流量**。mitmproxy 方案因本机代理环境（IPv6 出口）不可用而弃用，假端点方案更干净（无证书 / 无代理链干扰，且天然就是「CC 直连任意 /api/anthropic 端点」的形态）。
+
+### 变更（TODO 立项：拟真度提升——请求体改写与 CC 直连流量形态对齐）
+
+- **为什么改**：用户调研智谱 GLM Coding Plan 的工具识别机制后决定「保持现有功能不变、尽可能增加拟真度」。核对结论：GLM `/api/anthropic` 端点官方支持 CC 直连，直连流量天然携带 `metadata.user_id` / `context_management` / Anthropic 专有 system 段 / `cache_control` 且被端点正常接受——现有各剥离改写是隐私 / 瘦身习惯而非功能必须，每剥一处都使请求偏离官方见惯的直连基线，成为请求体层面唯一的拟真差异来源。方案定为新增 `FIDELITY` 拟真度开关（`compat` 现状默认 / `faithful` 形态对齐直连），保持现有功能不变、faithful 为纯增模式。
+- **改了什么**：`TODO.md` 新增 7 条待办（**T4**~**T10**，编号接续归档最大值 T3）：T4 `FIDELITY` 开关主体（faithful 下停止各剥离、只留 model 改写 + 可选钳制 / 思考钉死）；T5 思考钉死 / max_tokens 钳制独立子开关（思考钉死写入的顶层 `reasoning_effort` 可能是直连没有的结构性差异）；T6 实测 CC 直连基线请求体（`reasoning_effort` 有无、`cache_control` 打标分布，回填 T5 默认值）；T7 拟真度差异自查工具（字段级对比清单）；T8 README 拟真度文档（含「faithful 不是合规保证」边界声明）；T9 `CLASSIFIER_MODE` 流量画像评估（off 时上游请求量约为直连 1/4，请求体之外更大的差异，仅分析不改码）；T10 `fixTitlePromptLanguage` 在 faithful 下的去留实测。
+- **边界**：本次仅立项（写 TODO），无代码 / 配置 / 文档行为变更；实现按 T4→T6→T5 顺序推进（先抓直连基线再定子开关默认值）。同日用户裁定放弃 T9 / T10：分类器路由（`CLASSIFIER_MODE=off`）是功能选择（分类器直连上游体验太差、影响正常使用，非单纯省钱），标题语言修正也影响功能——功能优先于拟真度，两者不做、已归档留痕；faithful 模式下 `fixTitlePromptLanguage` 无条件保留。
+
 ## [2.12.0] - 2026-08-22
 
 ### 新增（cc-bridge dashboard：本地浏览器面板呈现最详细用量统计）

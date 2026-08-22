@@ -144,6 +144,7 @@
     <footer>
       口径：input = 输入 token 合计（已含缓存命中）；hit% = cache-hit / input；created = 缓存创建 token；
       命中率只计 server 侧能解析 usage 的请求（上游未返回 usage 的请求仅计入 reqs）。
+      时间按 HKT（UTC+8）解释：快捷窗口按 HKT 日历日取界（今天 = 今天 00:00:00 → 23:59:59，近 N 天 = 含今天的最近 N 个日历日）。
       时间粒度为小时桶：窗口边界上的小时整桶计入。趋势图按小时呈现、超过 48 个桶时按天归并。
       数据来自 ~/.cc-bridge/stats-&lt;upstream&gt;.json 快照（daemon 停止也可查询）。
     </footer>
@@ -168,23 +169,38 @@ function colorOf(upstream) {
   return cssColor(SLOTS[seriesColor[upstream]]);
 }
 
-// datetime-local 的值是本地时区（无秒）："YYYY-MM-DDTHH:MM"。查询时按本地时区解释、
-// 转成 ISO 交给服务端；初始化默认窗口 = 近 7 天。
-function localToISO(v) { return v ? new Date(v).toISOString() : ''; }
+// 时间统一按 HKT（UTC+8）解释：datetime-local 的值（"YYYY-MM-DDTHH:MM"，无秒）视为
+// HKT 墙钟，加固定 +08:00 偏移转 ISO 交给服务端。用固定偏移而非浏览器本地时区，保证
+// 「一天」的边界不随查看机器的时区设置漂移。只填了日期（无时间）按当天 00:00。
+const HKT_MS = 8 * 3600 * 1000;
+function inputToISO(v) {
+  if (!v) return '';
+  const full = v.length === 10 ? `${v}T00:00` : v;
+  const d = new Date(`${full}:00+08:00`);
+  return isNaN(d.getTime()) ? '' : d.toISOString();
+}
 
+// epoch ms → HKT 墙钟的 datetime-local 字符串（加 8h 后取 UTC 分量即 HKT 墙钟）。
+function toHKTInput(ms) {
+  const d = new Date(ms + HKT_MS);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}T${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+}
+
+// 快捷窗口按 HKT 日历日取界（不是滚动 24 小时）：
+//   今天    = 今天 00:00:00 → 今天 23:59:59（HKT）
+//   近 N 天 = 含今天的最近 N 个日历日：(今天−(N−1)日) 00:00:00 → 今天 23:59:59
+// Date.UTC 对越界的日分量自动归一化，跨月 / 跨年自然正确。
 function setQuickDefault(days) {
-  const now = new Date();
-  const from = new Date(now.getTime() - days * 24 * 3600 * 1000);
-  $('from').value = toLocalInput(from);
-  $('to').value = toLocalInput(now);
+  const n = new Date(Date.now() + HKT_MS); // 借 UTC 分量读出 HKT 墙钟的年 / 月 / 日
+  const dayStartMs = (dd) => Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), dd) - HKT_MS;
+  const from = dayStartMs(n.getUTCDate() - (days - 1));
+  const to = dayStartMs(n.getUTCDate()) + 24 * 3600 * 1000 - 60 * 1000; // 23:59（输入框分钟粒度）
+  $('from').value = toHKTInput(from);
+  $('to').value = toHKTInput(to);
   for (const b of $('quick').querySelectorAll('button')) {
     b.classList.toggle('active', b.dataset.days === String(days));
   }
-}
-
-function toLocalInput(d) {
-  const p = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 let lastData = null;      // 最近一次 /api/stats 返回（趋势图重绘免重新拉取）
@@ -438,7 +454,7 @@ function escapeHTML(s) {
 // 事件：查询按钮 / 快捷窗口 / 趋势指标切换。
 $('apply').addEventListener('click', () => {
   for (const b of $('quick').querySelectorAll('button')) b.classList.remove('active');
-  load(localToISO($('from').value), localToISO($('to').value));
+  load(inputToISO($('from').value), inputToISO($('to').value));
 });
 for (const b of $('quick').querySelectorAll('button')) {
   b.addEventListener('click', () => {
@@ -450,7 +466,7 @@ for (const b of $('quick').querySelectorAll('button')) {
       load('', '');
     } else {
       setQuickDefault(Number(days));
-      load(localToISO($('from').value), localToISO($('to').value));
+      load(inputToISO($('from').value), inputToISO($('to').value));
     }
   });
 }
@@ -471,7 +487,7 @@ window.addEventListener('resize', () => {
 
 // 初始化：默认近 7 天窗口。
 setQuickDefault(7);
-load(localToISO($('from').value), localToISO($('to').value));
+load(inputToISO($('from').value), inputToISO($('to').value));
 </script>
 </body>
 </html>
