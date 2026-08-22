@@ -4,6 +4,22 @@
 
 ## [Unreleased]
 
+## [2.12.0] - 2026-08-22
+
+### 新增（cc-bridge dashboard：本地浏览器面板呈现最详细用量统计）
+
+- **为什么改**：用户要求 `cc-bridge stats` 改回默认终端显示数据，并在输出尾部加一句提示「需要看更详细的用量统计信息可以使用 cc-bridge dashboard」；dashboard 是一个后续还会加别的功能的通用面板（本次只装用量统计模块，其余功能后续完善）。
+- **改了什么**：
+  - **CLI**（`bin/cc-bridge.js`）：`cc-bridge stats` 默认回归终端文本模式（聚合 / 单上游判断不变），`--text` / `-t` 保留为兼容别名；新增 `cc-bridge dashboard`（及别名 `stats --gui` / `-g`）弹本地浏览器面板；HELP 与 README 中英同步。
+  - **dashboard 页面**（`core/gui.html`）：概览卡 6 枚（含此前有数但从未展示的「缓存创建」）；「用量趋势」纯 SVG 多系列折线图（按上游分系列、请求数 / 输入 / 输出指标切换、超 48 桶自动按天归并、resize 自适应）；明细表扩为按上游 / 按 KEY / 按模型三张（全部带「缓存创建」列）；上游系列色固定槽位分配（light / dark 双模式）；新增暗色模式（跟随系统）。页面模块化（`<div class="module">`），后续功能以并列模块追加；服务端（`core/gui.js`）路由改为 `API_ROUTES` 注册表。
+  - **聚合层**（`core/stats.js`）：`aggregate()` / `aggregateWindowFor()` 返回值新增 `totals` / `upstreamTotals` / `series` 三块；stats 终端输出尾部加 dashboard 提示语。
+  - 修复趋势图空渲染 bug（某小时桶缺某上游时抛 TypeError，补齐矩阵按 0 落点）。
+
+### 变更（README 补「为什么需要桥接」立项理由 + 特有能力价值表述）
+
+- **为什么改**：主 README 中英此前只讲 What / How、不讲 Why——「Claude Code 只接受白名单内的模型 ID」这个立项前提在正式文档零提及；分类器路由（`CLASSIFIER_MODE`）、modelUsage 注入、请求体适配等多项桥接特有能力也体现不全；intro 举例停留在「GLM / Kimi / Qwen」与实现进展（glm/ds/mimo）脱节。
+- **改了什么**：主 README 中英新增「Why a bridge? / 为什么要桥接？」节（spoof→target 改写的必然性 + 六项纯配置给不了的能力）；What it does 补请求体适配、安全分类器路由、modelUsage 注入三条；intro 举例改「GLM / DeepSeek / MiMo」。`glm-bridge/README.md` 新增「CC 安全分类器路由（CLASSIFIER_MODE）」整节（两态行为与代价对照表、agnes 全失败 502 兜底语义）。
+
 ### 变更（README 补「为什么需要桥接」立项理由 + 特有能力价值表述，分类器路由补文档）
 
 - **为什么改**：主 README 中英只讲 What / How、不讲 Why——第一版 claude-proxy 的 Why 一节在 2.8.2 删「解锁 /effort xhigh」卖点时被连带删掉，但其中「Claude Code 只接受白名单内的模型 ID」这个立项前提至今成立，却只剩 kimi/qwen 预留模板注释里还有、正式文档零提及；读者（含用户本人复盘）会问「为什么不直接配置 CC 的配置文件指向上游」，README 答不了。同时多项桥接特有能力体现不全：分类器路由（`CLASSIFIER_MODE`，实测占 z.ai Coding Plan 额度约 70% 的额度大头开关）在所有 README 里零文档；modelUsage 注入只剩架构图里的一个术语、没讲作用；请求体适配只在各上游子 README 有清单、主 README 没点明「直连会把 CC 专有字段原样发过去」这个价值点；intro 举例还停在「GLM / Kimi / Qwen」与实现进展（glm/ds/mimo）脱节。
