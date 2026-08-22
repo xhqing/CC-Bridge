@@ -2,6 +2,10 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [2.13.0] - 2026-08-22
+
+（本版条目内容即原 [Unreleased] 段全部记录：T4 执行请求体全面透传 + 按 KEY 隐私选项 HIDE_USER_ID、T11 思考等级钉死功能下线改为透传、T6 直连基线实测与 T4/T5/T7/T8 拟真度系列待办闭环。发布定版时归入本版本号。）
+
 ## [Unreleased]
 
 ### 变更（T4 执行：请求体改全面透传——删四类剥离；新增按 KEY 隐私选项 HIDE_USER_ID）
