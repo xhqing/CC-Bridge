@@ -14,11 +14,43 @@
 
 </div>
 
-一个本地透明桥接框架，让 **Claude Code 访问第三方模型上游**（GLM / Kimi / Qwen ……）。每个上游在独立的 `<name>-bridge/` 目录下有一个 adapter 模块，共享同一套框架（`core/`）。**思考等级直接在 cc-bridge 的配置文件中配置**（`MODEL_THINKING`，见[按模型配思考等级](#按模型配思考等级glm--deepseek)）——Claude Code 的 `/effort` 选任何等级都不影响实际上游模型的思考等级；同时支持**多 API_KEY 容灾**。
+一个本地透明桥接框架，让 **Claude Code 访问第三方模型上游**（GLM / DeepSeek / MiMo ……）。每个上游在独立的 `<name>-bridge/` 目录下有一个 adapter 模块，共享同一套框架（`core/`）。**思考等级直接在 cc-bridge 的配置文件中配置**（`MODEL_THINKING`，见[按模型配思考等级](#按模型配思考等级glm--deepseek)）——Claude Code 的 `/effort` 选任何等级都不影响实际上游模型的思考等级；同时支持**多 API_KEY 容灾**。
 
 > **当前已实现：** `glm`（GLM-5.3，z.ai 国际版 / 智谱 bigmodel.cn 国内版）、`ds`（DeepSeek-V4）、`mimo`（小米 MiMo）。`kimi` / `qwen` 为预留占位——见[添加新上游](#添加新上游)。
 
 安装一次后，在**任意目录**下用一条命令即可启动：`cc-bridge`。
+
+## 为什么要桥接？
+
+Claude Code 本身支持用纯配置指向自定义端点（`~/.claude/settings.json` 里的
+`ANTHROPIC_BASE_URL` + `ANTHROPIC_MODEL`）——那为什么中间还要跑一个桥？因为单靠配置
+无法调和两侧对请求 `model` 字段的相反要求：
+
+- **Claude Code 只接受自家白名单内的模型 ID**（`claude-opus-4-8`、
+  `claude-haiku-4-5` ……）。把 `ANTHROPIC_MODEL` 指向第三方真实模型名（`glm-5.3`、
+  `deepseek-v4` ……），Claude Code 会拒绝或不认。
+- **上游按 `model` 字段路由**，只认自己的真实模型名。给它发 `claude-opus-4-8`，它
+  没有模型可服务。
+
+客户端要 Claude 风格的 ID、上游要真实模型名，而请求里的 `model` 字段只有一个。桥的
+做法是：给 Claude Code 喂白名单内的 spoof ID（`MODEL_MAP`，如
+`claude-opus-4-8->glm-5.3`），转发前把 `body.model` 改写回真实模型。消息结构、工具
+调用、SSE 事件全部原样透传。
+
+除了让两头接上，桥还提供纯配置给不了的能力：
+
+- **多 KEY 容灾**：跨账号、跨端点轮换（见[多 KEY 容灾](#多-key-容灾)）。
+- **思考等级按模型钉死**（`MODEL_THINKING`），不受 Claude Code `/effort` 影响。
+- **按上游的请求体适配**——剥离上游会拒绝或无法识别的 Claude 专有字段
+  （`context_management`、`cache_control`、Anthropic 专有 system 段）、把
+  `max_tokens` 钳到模型真实上限、在支持缓存标记的上游给 `tools` 打
+  `cache_control` 触发上下文缓存。
+- **安全分类器路由**（`glm`）——Claude Code auto 模式的安全分类器每轮工具调用前都
+  发请求（约是主对话 3 倍）且按全额模型倍率计费；可改走免费模型或本地零成本放行
+  （`CLASSIFIER_MODE`）。
+- **modelUsage 注入**——配 `CONTEXT_WINDOW` / `MAX_OUTPUT_TOKENS` 后，桥把真实上下文
+  窗口注入响应，客户端显示的窗口与真实模型一致、而不是 spoof 模型的窗口。
+- **用量统计**（终端 + 本地 dashboard），跨重启持久化。
 
 ## 可用上游
 
@@ -33,10 +65,13 @@
 ## 它能做什么
 
 - **框架 + 按上游分 adapter。** 所有与上游无关的通用逻辑（HTTP 服务、多 KEY 容灾、model 改写、modelUsage 注入、daemon）都在 [`core/`](core/)；每个上游的专属逻辑（请求体适配、思考等级映射、模型上限表）在各自的 `<name>-bridge/adapter.js`。新增上游只需加一个文件 + 注册表一行。
+- **请求体适配。** 每个 adapter 把 Anthropic 请求体改写成自己的上游真正接受的形式——剥离上游会拒绝或忽略的 Claude 专有字段（`context_management`、`cache_control`、Anthropic 专有 system 段）、把 `max_tokens` 钳到模型真实上限、在支持缓存标记的上游给 `tools` 打 `cache_control` 触发上下文缓存（各上游的完整适配清单见对应 `<name>-bridge/README.md`）。直连会把原请求原样发过去。
+- **安全分类器路由（GLM）。** Claude Code auto 模式有个安全分类器，每次工具调用前都发一个请求（约是主对话请求数的 3 倍）且按全额模型倍率计费——实测占 z.ai Coding Plan 额度约 70%。`~/.cc-bridge/glm.env` 里的 `CLASSIFIER_MODE` 可把这些请求改走免费模型（`on`）或由桥本地伪造放行响应（`off`，默认——0 消耗，但无安全判断）。见 [glm-bridge/README.md](glm-bridge/README.md)。
 - **思考等级配置文件配置。** 每个 target 模型通过 `~/.cc-bridge/<upstream>.env` 里的 `MODEL_THINKING` 钉死一个思考等级（如 `max` / `high` / `none`，未列出的模型走 `MODEL_THINKING_DEFAULT`，默认 `max`）。思考等级由桥接配置决定，**Claude Code 的 `/effort` 选任何等级都不影响实际上游模型的思考等级**。（见[按模型配思考等级](#按模型配思考等级glm--deepseek)。）
 - **多 KEY 容灾。** 把多个 KEY 各自成行配成编号变量（`API_KEY_1=…`、`API_KEY_2=…`…，每行一个，方便单独注释账号来源、或整行注释掉禁用某 KEY；旧式逗号分隔 `API_KEY=k1,k2` 仍兼容）。某 KEY 返回 `401`/`403`（被拒 / 额度用尽）时，桥把它熔断 60 秒并立即切换下一个 KEY；瞬态错误（`429`/`5xx`/网络）先在同 KEY 重试、用尽再换。KEY 按 `API_KEY_n_PRIORITY` 优先级从高到低使用（不配则按编号顺序），主力 KEY 熔断才落备用、到期自动回切。URL 始终不变，只轮换 KEY。（见[多 KEY 容灾](#多-key-容灾)。）
 - **按上游隔离。** 每个上游有独立配置（`~/.cc-bridge/<upstream>.env`）、pid 文件、日志文件，多个上游可作为 daemon 并存（用不同 `PROXY_PORT`）。
-- **用量统计 + 本地 GUI。** `cc-bridge stats` 在本地起浏览器面板（仅绑 127.0.0.1、带一次性 token）：可选起止时间或快捷窗口（今天 / 近 7 天 / 近 30 天 / 全部），按 key-name 与按模型两个维度呈现输入 Token、缓存命中 Token、缓存命中率与输出 Token（跨上游合并）。用量按小时分桶持久化在 `~/.cc-bridge/stats-<upstream>.json`（滚动保留 30 天，daemon 重启不清零），daemon 停着也能查。`cc-bridge stats --text` 保留原终端文本视图。
+- **modelUsage 注入（真实上下文窗口）。** 在上游配置里设 `CONTEXT_WINDOW` / `MAX_OUTPUT_TOKENS` 后，桥给每条响应注入 `modelUsage`（spoof ID 与 target 双 key 命中），客户端显示的上下文窗口与真实模型一致——不注入的话，客户端会显示 spoof 模型的窗口。
+- **用量统计：终端文本 + 本地 dashboard。** `cc-bridge stats` 在终端打印按 KEY 名与按模型两张聚合表（跨上游合并），并提示更详细的查看入口。`cc-bridge dashboard` 在本地起浏览器面板（仅绑 127.0.0.1、带一次性 token）：可选起止时间或快捷窗口（今天 / 近 7 天 / 近 30 天 / 全部），呈现最详细的用量统计——概览卡（请求数 / 输入 / 缓存命中 / 命中率 / 缓存创建 / 输出）、按上游的小时趋势图（请求数 / 输入 / 输出可切换，超过 48 个桶自动按天归并）、按上游 / 按 KEY 名 / 按模型三张明细表。用量按小时分桶持久化在 `~/.cc-bridge/stats-<upstream>.json`（滚动保留 30 天，daemon 重启不清零），daemon 停着也能查。dashboard 按模块化结构搭建，用量统计是第一个模块，后续功能会以并列模块加入。
 - **零运行时依赖。** 仅用 Node ≥ 14 内置模块。
 
 ## 工作原理
@@ -47,7 +82,7 @@ Claude Code ──POST /v1/messages──▶  cc-bridge (127.0.0.1:8787)
   model = <伪模型 ID>               · 改写 body.model → 真实模型      ├── KEY #2 ──┤  上游 · 目标模型
                                     · adapter.adaptRequestBody(body)  │  (容灾切换) │
                                     · 遇 401/403 → 切换下一个 KEY    └────────────┘
-                                    · 向响应注入 modelUsage
+                                    · 向响应注入 modelUsage（真实上下文窗口）
 ```
 
 上游由 `<upstream>` 参数选定（默认 `ds`）。桥加载 `core/adapter.js` → 对应上游的 `adapter.js`，对每条转发的请求应用该 adapter 的 `adaptRequestBody`。
@@ -121,9 +156,11 @@ cc-bridge claude [args]   # 启动桥接 + 启动指向它的 claude
 cc-bridge stop            # 停止后台服务
 cc-bridge restart         # 重启后台服务（stop + start）
 cc-bridge status          # 查看运行状态
-cc-bridge stats           # 打开本地用量统计 GUI（时间窗口可选，按 KEY 名 + 按模型）
-cc-bridge stats --text    # 终端文本统计（不弹 GUI）
-cc-bridge <upstream> stats  # 用量统计 GUI（跨上游合并视图）
+cc-bridge stats           # 终端文本用量统计（全部上游聚合）
+cc-bridge <upstream> stats  # 单上游终端统计
+cc-bridge dashboard       # 打开本地浏览器 dashboard（时间窗口筛选、趋势图、按上游 /
+                          # KEY / 模型明细）
+cc-bridge stats --gui     # dashboard 的别名
 cc-bridge logs            # 查看桥接日志（Ctrl-C 退出）
 cc-bridge health          # 探测 /health
 cc-bridge set default upstream [name]  # 查看 / 设置默认上游
@@ -212,8 +249,8 @@ CC-Bridge 就是为扩展而设计的。新增一个上游（如 `kimi`）：
 | `core/server.js`          | 桥接服务器：model 改写、多 KEY 容灾、modelUsage 注入、按小时分桶的用量统计 |
 | `core/adapter.js`         | 上游注册表 + adapter 加载器                        |
 | `core/config.js`          | 按上游的配置查找 / 编辑 / 导入 / 展示              |
-| `core/stats.js`           | 用量快照读取 + 时间窗口聚合（终端文本与 GUI 共用）  |
-| `core/gui.js` + `core/gui.html` | 本地用量统计面板：127.0.0.1 一次性 token 服务 + 浏览器页面 |
+| `core/stats.js`           | 用量快照读取 + 时间窗口聚合（终端文本与 dashboard 共用）  |
+| `core/gui.js` + `core/gui.html` | 本地 dashboard（模块一：用量统计）：127.0.0.1 一次性 token 服务 + 浏览器页面 |
 | `core/daemon.js`          | 后台进程管理（按上游的 pid + 日志）                |
 | `core/claude.js`          | 启动桥接 + 通过它启动 `claude`                    |
 | `core/util.js`            | 端口清理 / health 探测 / 就绪等待                 |
@@ -223,7 +260,7 @@ CC-Bridge 就是为扩展而设计的。新增一个上游（如 `kimi`）：
 | `kimi-bridge/`、`qwen-bridge/` | 预留占位（adapter + README）                |
 | `<name>-bridge/<name>.env.example` | 按上游的配置模板（GLM / DeepSeek / MiMo 已填；Kimi/Qwen 预留）  |
 | `~/.cc-bridge/<upstream>.env` | 真实配置（你的，gitignored，绝不打包）        |
-| `~/.cc-bridge/stats-<upstream>.json` | 用量统计快照（小时分桶，重启不清零；供 `cc-bridge stats` 读取） |
+| `~/.cc-bridge/stats-<upstream>.json` | 用量统计快照（小时分桶，重启不清零；供 `cc-bridge stats` / `cc-bridge dashboard` 读取） |
 | `~/.cc-bridge/default-upstream` | 用户设置的默认上游（`set default upstream` 生成；不存在 = 内置默认 `ds`） |
 
 ## 注意 / 限制

@@ -34,10 +34,12 @@ Commands:
   cc-bridge stop                  stop background service
   cc-bridge restart               restart background service (stop + start)
   cc-bridge status                show running status
-  cc-bridge stats                 open the local stats GUI in your browser (time-window filter, by key & model)
-  cc-bridge stats --text          terminal-only stats for ALL upstreams (no GUI)
-  cc-bridge <upstream> stats      open the stats GUI (all-upstream merged view)
-  cc-bridge <upstream> stats --text  terminal stats for one upstream
+  cc-bridge stats                 terminal usage stats for ALL upstreams (aggregated)
+  cc-bridge <upstream> stats      terminal stats for one upstream
+  cc-bridge dashboard             open the local usage dashboard in your browser (time-window
+                                  filter, trend chart, by upstream / key & model detail)
+  cc-bridge stats --text          alias of plain 'stats' (terminal; kept for compatibility)
+  cc-bridge stats --gui           alias of 'dashboard' (opens the browser dashboard)
   cc-bridge logs                  tail the bridge log (Ctrl-C to exit)
   cc-bridge health                probe /health
   cc-bridge config                edit config in $EDITOR
@@ -157,18 +159,28 @@ async function main() {
       break;
 
     case 'stats': {
-      // 默认弹本地 GUI（浏览器面板：起止时间可选、按 key-name / model 两维呈现输入 /
-      // 缓存命中 / 命中率 / 输出）；--text 走原终端文本模式。聚合 / 单上游模式对 GUI
-      // 同样适用（GUI 内为跨上游合并视图，单上游选择在页面里通过窗口与维度自然呈现）。
-      const textMode = sub.includes('--text') || sub.includes('-t');
-      if (textMode) {
-        if (!explicit && !cfgPath && !process.env.CC_BRIDGE_CONFIG) {
-          showStats(null);
-        } else {
-          showStats(loadConfig({ upstream, configPath: cfgPath }));
-        }
+      // 默认终端文本模式（全部 / 单上游判断不变）；--gui 弹本地 dashboard（浏览器
+      // 面板：起止时间、趋势图、按上游 / KEY / 模型明细）。--text / -t 保留为兼容
+      // 别名（等价默认行为）。输出尾部提示 dashboard 命令。
+      const guiMode = sub.includes('--gui') || sub.includes('-g');
+      if (guiMode) {
+        const { cfg } = loadOrThrow(upstream, cfgPath);
+        await startGui({ basePort: cfg.PORT + 1 });
         break;
       }
+      if (!explicit && !cfgPath && !process.env.CC_BRIDGE_CONFIG) {
+        showStats(null);
+      } else {
+        showStats(loadConfig({ upstream, configPath: cfgPath }));
+      }
+      break;
+    }
+
+    case 'dashboard': {
+      // 本地 dashboard：浏览器面板（仅绑 127.0.0.1、一次性 token）。当前第一模块为
+      // 用量统计（概览卡、趋势图、按上游 / KEY / 模型明细），后续其它功能按模块追加
+      // （页面 .module 容器 + gui.js API_ROUTES 注册行，框架不动）。stats 终端输出会
+      // 提示本命令。
       const { cfg } = loadOrThrow(upstream, cfgPath);
       await startGui({ basePort: cfg.PORT + 1 });
       break;

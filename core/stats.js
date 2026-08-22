@@ -57,13 +57,16 @@ function normalizedHours(stats) {
   return [];
 }
 
-// --- 时间窗口聚合（GUI 的数据接口） -----------------------------------------------
+// --- 时间窗口聚合（CLI 文本与 GUI dashboard 共用的数据接口） -----------------------
 // 把窗口 [fromISO, toISO]（闭区间，任一为空表示该侧不设限）内的小时桶合并，返回：
 //   {
 //     upstreams: ['ds', 'glm'],             // 有快照的上游
 //     window: { from, to, requestedFrom, requestedTo },  // 实际覆盖范围 + 请求范围
+//     totals: bucket,                       // 全部上游合计（dashboard 概览卡）
+//     upstreamTotals: { name: bucket },     // 按上游合计（dashboard 明细表 / 趋势图图例）
 //     keys:   { label: bucket },            // 跨上游合并的按 KEY 表（label 消歧规则同 CLI）
 //     models: { label: bucket },            // 按「上游/模型」合并的按模型表
+//     series: [{ hk, upstream, bucket }],   // 小时 × 上游序列（dashboard 趋势图）
 //   }
 // bucket 字段：requests / inputTokens / outputTokens / cacheHitTokens / cacheCreatedTokens。
 // 时间比较用「桶起点」：桶 hk 落入窗口 ⇔ from ≤ hk:00 ≤ to。边界用宽松口径——窗口边
@@ -184,6 +187,7 @@ function showStats(cfg) {
   if (!agg.window.from) {
     console.log(`[bridge] no stats found (no usable stats-<upstream>.json under ${configDir()})`);
     console.log('[bridge] start a daemon and make a few requests, then re-run.');
+    console.log('[bridge] 需要看更详细的用量统计信息可以使用 cc-bridge dashboard。');
     return;
   }
   const scope = agg.upstreams.join(' + ');
@@ -212,6 +216,7 @@ function showStats(cfg) {
   console.log('[bridge] input = 输入 token 合计（已含缓存命中）；hit% = cache-hit / input；');
   console.log('[bridge] 命中率只计 server 侧能解析 usage 的请求（上游未返回 usage 的请求仅计入 reqs）。');
   console.log(`[bridge] 时间粒度为小时桶：窗口边界上的小时整桶计入（窗口即小时粒度）。`);
+  console.log('[bridge] 需要看更详细的用量统计信息可以使用 cc-bridge dashboard。');
 }
 
 // 单上游模式的窗口聚合：数据源缩到指定上游（cfg 传入时），聚合模式（cfg=null）合并
@@ -219,7 +224,7 @@ function showStats(cfg) {
 function aggregateWindowFor(cfg, fromISO, toISO) {
   if (!cfg) return aggregate(fromISO, toISO);
   const { file, stats } = loadStats(cfg.upstream, cfg.configPath);
-  if (!stats) return { upstreams: [], window: { from: null, to: null }, keys: {}, models: {} };
+  if (!stats) return { upstreams: [], window: { from: null, to: null }, totals: { ...ZERO }, upstreamTotals: {}, keys: {}, models: {}, series: [] };
   // 借道 aggregate：把单上游数据临时放进聚合器。直接内联窗口过滤更简单——
   // 复用 normalizedHours + 同一套消歧 / 合并规则，只是数据源只有一份。
   return aggregateFromLoaded([{ upstream: cfg.upstream, stats }], fromISO, toISO);
@@ -227,6 +232,8 @@ function aggregateWindowFor(cfg, fromISO, toISO) {
 
 // aggregate() 与 aggregateWindowFor() 共用的核心：对已加载的 [{upstream, stats}]
 // 做窗口过滤 + 两维合并。抽出来避免单上游模式重复实现（口径必须与聚合模式一致）。
+// 除按 KEY / 按模型两维表外，同时产出 totals（全上游合计）、upstreamTotals（按上游
+// 合计）与 series（小时 × 上游序列）——dashboard 的概览卡、按上游表与趋势图数据。
 function aggregateFromLoaded(loaded, fromISO, toISO) {
   const fromT = fromISO ? Date.parse(fromISO) : null;
   const toT = toISO ? Date.parse(toISO) : null;
@@ -239,6 +246,8 @@ function aggregateFromLoaded(loaded, fromISO, toISO) {
   };
   const keysAgg = {};
   const modelAgg = {};
+  const upstreamAgg = {};
+  const series = [];
   const coveredFrom = [];
   const coveredTo = [];
   for (const { upstream, stats } of loaded) {
@@ -246,6 +255,9 @@ function aggregateFromLoaded(loaded, fromISO, toISO) {
       if (!inWindow(hk)) continue;
       coveredFrom.push(`${hk}:00:00.000Z`);
       if (stats.updatedAt) coveredTo.push(stats.updatedAt);
+      // 每小时桶每上游一个合计桶（series 与 upstreamTotals 都从它来），桶内两张
+      // 维度表任一有数即成行——同一小时桶两维度合计口径天然一致（同一份累计）。
+      const hbTotal = { ...ZERO };
       for (const [name, s] of Object.entries(keys || {})) {
         keysAgg[name] ||= { ...ZERO };
         addBucket(keysAgg[name], s);
@@ -254,9 +266,18 @@ function aggregateFromLoaded(loaded, fromISO, toISO) {
         const label = `${upstream}/${model}`;
         modelAgg[label] ||= { ...ZERO };
         addBucket(modelAgg[label], s);
+        addBucket(hbTotal, s);
+      }
+      if (hbTotal.requests > 0) {
+        series.push({ hk, upstream, bucket: hbTotal });
+        upstreamAgg[upstream] ||= { ...ZERO };
+        addBucket(upstreamAgg[upstream], hbTotal);
       }
     }
   }
+  series.sort((a, b) => (a.hk < b.hk ? -1 : a.hk > b.hk ? 1 : a.upstream.localeCompare(b.upstream)));
+  const totals = { ...ZERO };
+  for (const b of Object.values(upstreamAgg)) addBucket(totals, b);
   return {
     upstreams: loaded.map((l) => l.upstream),
     window: {
@@ -265,8 +286,11 @@ function aggregateFromLoaded(loaded, fromISO, toISO) {
       requestedFrom: fromISO || null,
       requestedTo: toISO || null,
     },
+    totals,
+    upstreamTotals: upstreamAgg,
     keys: keysAgg,
     models: modelAgg,
+    series,
   };
 }
 

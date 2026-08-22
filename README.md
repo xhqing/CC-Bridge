@@ -16,7 +16,7 @@
 </div>
 
 A local transparent bridge that lets **Claude Code talk to third-party model
-upstreams** (GLM / Kimi / Qwen …) through a single local endpoint. Each upstream
+upstreams** (GLM / DeepSeek / MiMo …) through a single local endpoint. Each upstream
 lives in its own adapter module under a `<name>-bridge/` directory and shares the
 same framework (`core/`). **Thinking levels are configured directly in cc-bridge's
 config file** (`MODEL_THINKING`, see
@@ -31,6 +31,44 @@ failover**.
 
 Install it once and start it from **any directory** with a single command:
 `cc-bridge`.
+
+## Why a bridge?
+
+Claude Code can be pointed at a custom endpoint with plain config
+(`ANTHROPIC_BASE_URL` + `ANTHROPIC_MODEL` in `~/.claude/settings.json`) — so why
+run a bridge in between? Because config alone can't reconcile the two sides'
+conflicting requirements on the request's `model` field:
+
+- **Claude Code only accepts model IDs from its own whitelist** (`claude-opus-4-8`,
+  `claude-haiku-4-5`, …). Point `ANTHROPIC_MODEL` at a real third-party model
+  name (`glm-5.3`, `deepseek-v4`, …) and Claude Code rejects or ignores it.
+- **The upstream routes by the `model` field** and only recognises its own real
+  model names. Send it `claude-opus-4-8` and it has no model to serve.
+
+So the client demands a Claude-style ID while the upstream demands a real one —
+and there is only one `model` field. The bridge feeds Claude Code a whitelisted
+spoof ID (`MODEL_MAP`, e.g. `claude-opus-4-8->glm-5.3`) and rewrites
+`body.model` to the real target before forwarding. Message structure, tool
+calls, and SSE events pass through verbatim.
+
+Beyond making the two ends meet, the bridge adds things plain config can't
+give you:
+
+- **Multi-key failover** across accounts and endpoints (see
+  [Multi-key failover](#multi-key-failover)).
+- **Pinned per-model thinking levels** (`MODEL_THINKING`), independent of
+  Claude Code's `/effort`.
+- **Request-body adaptation** per upstream — strips Claude-specific fields the
+  upstream would reject or choke on (`context_management`, `cache_control`,
+  Anthropic-only system blocks), clamps `max_tokens` to the model's real cap,
+  and tags `tools` for context caching where the upstream honours it.
+- **Safety-classifier routing** (`glm`) — Claude Code's auto-mode security
+  monitor fires ~3× per agent turn at full model rates; route it to a free
+  model or answer it locally at zero cost (`CLASSIFIER_MODE`).
+- **modelUsage injection** — set `CONTEXT_WINDOW` / `MAX_OUTPUT_TOKENS` and the
+  bridge injects the real context window into responses, so the client's
+  context display matches the actual model instead of the spoofed one.
+- **Usage stats** (terminal + local dashboard) persisted across restarts.
 
 ## Available upstreams
 
@@ -49,6 +87,20 @@ Install it once and start it from **any directory** with a single command:
   in [`core/`](core/). Each upstream's quirks (body adaptation, thinking-level
   mapping, model caps) live in its `<name>-bridge/adapter.js`. Adding an upstream
   touches only one new file + one registry line.
+- **Request-body adaptation.** Each adapter rewrites the Anthropic request body
+  into what its upstream actually accepts — stripping Claude-specific fields
+  (`context_management`, `cache_control`, Anthropic-only system blocks) that the
+  upstream rejects or ignores, clamping `max_tokens` to the model's real cap,
+  and tagging `tools` for context caching where the upstream honours it (see
+  each `<name>-bridge/README.md` for the exact list). Direct connection would
+  send these fields raw.
+- **Safety-classifier routing (GLM).** Claude Code's auto mode runs a security
+  monitor that fires before every tool call (~3× the main conversation's request
+  count) at full model rates — measured at ~70% of a z.ai Coding Plan quota.
+  `CLASSIFIER_MODE` in `~/.cc-bridge/glm.env` routes these requests to a free
+  model (`on`) or answers them locally with a canned allow (`off`, the default —
+  zero cost, no safety judgment). See
+  [glm-bridge/README.md](glm-bridge/README.md).
 - **Thinking level configured per model.** Each target model gets a pinned
   thinking level via `MODEL_THINKING` in `~/.cc-bridge/<upstream>.env` (e.g.
   `max` / `high` / `none`; models not listed fall back to
@@ -69,14 +121,25 @@ Install it once and start it from **any directory** with a single command:
 - **Per-upstream isolation.** Each upstream has its own config
   (`~/.cc-bridge/<upstream>.env`), pid file, and log file, so several upstreams
   can run as daemons side by side (use different `PROXY_PORT`s).
-- **Usage stats with a local GUI.** `cc-bridge stats` opens a local browser
-  dashboard (127.0.0.1, one-time token) where you pick a start/end time — or a
-  quick window (today / last 7 days / last 30 days / all) — and see input
-  tokens, cache-hit tokens, cache hit rate and output tokens aggregated by
-  key-name and by model, merged across all upstreams. Usage is persisted in
-  hourly buckets (`~/.cc-bridge/stats-<upstream>.json`, 30-day rolling
-  retention, survives daemon restarts), so the dashboard works even when the
-  daemon is stopped. `cc-bridge stats --text` keeps the terminal-only view.
+- **modelUsage injection (real context window).** Set `CONTEXT_WINDOW` /
+  `MAX_OUTPUT_TOKENS` in the upstream's env and the bridge injects a
+  `modelUsage` entry into every response (both under the spoof ID and the
+  target), so the client's context-window display matches the actual model —
+  without it, the client would show the spoofed model's window.
+- **Usage stats in the terminal + a local dashboard.** `cc-bridge stats`
+  prints terminal tables aggregated by key-name and by model across all
+  upstreams, with a hint pointing at the richer view. `cc-bridge dashboard`
+  opens a local browser dashboard (127.0.0.1, one-time token) where you pick a
+  start/end time — or a quick window (today / last 7 days / last 30 days /
+  all) — and get the full detail: overview cards (requests / input / cache-hit
+  / hit rate / cache-created / output), an hourly trend chart by upstream
+  (requests / input / output switchable, auto day-merging past 48 buckets),
+  and detail tables by upstream, by key-name and by model, merged across all
+  upstreams. Usage is persisted in hourly buckets
+  (`~/.cc-bridge/stats-<upstream>.json`, 30-day rolling retention, survives
+  daemon restarts), so the dashboard works even when the daemon is stopped.
+  The dashboard is built to grow — the usage-stats module is its first block
+  and later features will join it as sibling modules.
 - **Zero runtime dependencies.** Node ≥ 14 built-ins only.
 
 ## How it works
@@ -88,6 +151,7 @@ Claude Code ──POST /v1/messages──▶  cc-bridge (127.0.0.1:8787)
                                     · adapter.adaptRequestBody(body)     │  (failover)│
                                     · on 401/403 → rotate to next key   └────────────┘
                                     · inject modelUsage into the response
+                                      (real context window for the client)
 ```
 
 The upstream is chosen by the `<upstream>` argument (default `ds`). The bridge
@@ -179,9 +243,11 @@ cc-bridge claude [args]   # start bridge + launch claude pointed at it
 cc-bridge stop            # stop the background service
 cc-bridge restart         # restart the background service (stop + start)
 cc-bridge status          # show running status
-cc-bridge stats           # open the local stats GUI in your browser (time window, by key & model)
-cc-bridge stats --text    # terminal-only stats (no GUI)
-cc-bridge <upstream> stats  # stats GUI (merged view across upstreams)
+cc-bridge stats           # terminal usage stats for ALL upstreams (aggregated)
+cc-bridge <upstream> stats  # terminal stats for one upstream
+cc-bridge dashboard       # open the local usage dashboard in your browser (time window,
+                          # trend chart, by upstream / key & model detail)
+cc-bridge stats --gui     # alias of 'dashboard'
 cc-bridge logs            # tail the bridge log (Ctrl-C to exit)
 cc-bridge health          # probe /health
 cc-bridge set default upstream [name]  # show / set the default upstream
@@ -316,8 +382,8 @@ etc.
 | `core/server.js`         | the bridge server: model rewrite, multi-key failover, modelUsage injection, hourly-bucket usage stats |
 | `core/adapter.js`        | upstream registry + adapter loader                 |
 | `core/config.js`         | per-upstream config find / edit / import / show    |
-| `core/stats.js`          | usage-stats snapshot reader + time-window aggregation (CLI text & GUI) |
-| `core/gui.js` + `core/gui.html` | local stats dashboard: 127.0.0.1 one-time-token server + browser page |
+| `core/stats.js`          | usage-stats snapshot reader + time-window aggregation (CLI text & dashboard) |
+| `core/gui.js` + `core/gui.html` | local dashboard (module 1: usage stats): 127.0.0.1 one-time-token server + browser page |
 | `core/daemon.js`         | background process management (per-upstream pid + log) |
 | `core/claude.js`         | start bridge + launch `claude` through it          |
 | `core/util.js`           | port cleanup / health probe / readiness wait       |
@@ -327,7 +393,7 @@ etc.
 | `kimi-bridge/`, `qwen-bridge/` | reserved placeholders (adapter + README)    |
 | `<name>-bridge/<name>.env.example` | per-upstream config template (GLM / DeepSeek / MiMo filled; Kimi/Qwen reserved) |
 | `~/.cc-bridge/<upstream>.env` | real config (yours, gitignored, never packaged) |
-| `~/.cc-bridge/stats-<upstream>.json` | usage stats snapshot (hourly buckets, survives restarts; feeds `cc-bridge stats`) |
+| `~/.cc-bridge/stats-<upstream>.json` | usage stats snapshot (hourly buckets, survives restarts; feeds `cc-bridge stats` / `cc-bridge dashboard`) |
 | `~/.cc-bridge/default-upstream` | user-set default upstream (created by `set default upstream`; absent = built-in `ds`) |
 
 ## Notes / caveats

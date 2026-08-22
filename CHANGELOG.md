@@ -4,6 +4,25 @@
 
 ## [Unreleased]
 
+### 变更（README 补「为什么需要桥接」立项理由 + 特有能力价值表述，分类器路由补文档）
+
+- **为什么改**：主 README 中英只讲 What / How、不讲 Why——第一版 claude-proxy 的 Why 一节在 2.8.2 删「解锁 /effort xhigh」卖点时被连带删掉，但其中「Claude Code 只接受白名单内的模型 ID」这个立项前提至今成立，却只剩 kimi/qwen 预留模板注释里还有、正式文档零提及；读者（含用户本人复盘）会问「为什么不直接配置 CC 的配置文件指向上游」，README 答不了。同时多项桥接特有能力体现不全：分类器路由（`CLASSIFIER_MODE`，实测占 z.ai Coding Plan 额度约 70% 的额度大头开关）在所有 README 里零文档；modelUsage 注入只剩架构图里的一个术语、没讲作用；请求体适配只在各上游子 README 有清单、主 README 没点明「直连会把 CC 专有字段原样发过去」这个价值点；intro 举例还停在「GLM / Kimi / Qwen」与实现进展（glm/ds/mimo）脱节。
+- **改了什么**：
+  - **主 README 中英**：新增「Why a bridge? / 为什么要桥接？」节（置于 Available upstreams 之前）——讲清两侧对 `model` 字段的相反要求（CC 只认白名单 ID ↔ 上游只认真实模型名、`model` 只有一个），spoof→target 改写是唯一粘合方式；随后列出六项纯配置给不了的能力（多 KEY 容灾、思考等级钉死、请求体适配、分类器路由、modelUsage 注入、用量统计）。What it does 补三条：请求体适配（点明剥离 CC 专有字段 / 钳 max_tokens / 打缓存标的价值）、安全分类器路由（高频 3 倍 + 约 70% 额度 + `on`/`off` 语义）、modelUsage 注入（`CONTEXT_WINDOW` / `MAX_OUTPUT_TOKENS` 的作用——客户端显示真实窗口而非 spoof 模型窗口）。架构图 modelUsage 行加注「真实上下文窗口」。intro 举例「GLM / Kimi / Qwen」改「GLM / DeepSeek / MiMo」。
+  - **glm-bridge/README.md**：新增「CC 安全分类器路由（CLASSIFIER_MODE）」整节——分类器是什么、为什么高频费额度（约 70%）、`on`（AGNES 免费模型 + 主备容灾 + 协议转换 + 走系统代理）与 `off`（默认，本地伪造放行、0 消耗无判断）两态行为与代价对照表、agnes 全失败时 502 不放行的兜底语义；「它做什么」补一条分类器路由；配置主要字段清单补 `CLASSIFIER_MODE`。
+- **边界**：纯文档改动，无代码 / 配置变更；`MODEL_THINKING` 等既有表述不动。
+
+### 变更（stats 回归终端文本默认 + 新增 cc-bridge dashboard：本地浏览器面板呈现最详细用量统计）
+
+- **为什么改**：用户要求 `cc-bridge stats` 改回默认终端显示数据，并在输出尾部加一句提示「需要看更详细的用量统计信息可以使用 cc-bridge dashboard」；dashboard 是一个后续还会加别的功能的通用面板（本次只装用量统计模块，其余功能后续完善），名字就叫 cc-bridge dashboard。
+- **改了什么**：
+  - **CLI**（`bin/cc-bridge.js`）：`cc-bridge stats` 默认回归终端文本模式（聚合 / 单上游判断不变），`--text` / `-t` 保留为兼容别名；新增 `cc-bridge dashboard`（及别名 `stats --gui` / `-g`）弹本地浏览器面板；HELP 与 README 中英同步。
+  - **提示语**（`core/stats.js`）：stats 终端输出尾部（含无数据分支）加 `[bridge] 需要看更详细的用量统计信息可以使用 cc-bridge dashboard。`。
+  - **聚合层增产**（`core/stats.js`）：`aggregate()` / `aggregateWindowFor()` 返回值新增三块——`totals`（全部上游合计，概览卡用）、`upstreamTotals`（按上游合计，按上游明细表用）、`series`（`[{hk, upstream, bucket}]` 小时 × 上游序列，趋势图用；从 models 维度合计，与既有两维表同一累计口径）；单上游无快照的空返回同步带这三字段。
+  - **dashboard 页面重写**（`core/gui.html`）：概览卡 6 枚（请求数 / 输入 / 缓存命中 / 命中率 / **缓存创建** / 输出——缓存创建列此前落盘有数但从未展示）；「用量趋势」纯 SVG 多系列折线图（按上游分系列、请求数 / 输入 / 输出指标切换、y 轴漂亮刻度、hover crosshair 吸附最近时间点 + 单 tooltip 列全部上游数值、超过 48 个小时桶自动按天归并、窗口 resize 自适应重绘）；明细表从 2 张扩为 3 张（按上游 / 按 KEY / 按模型），全部加「缓存创建」列；上游系列色按固定槽位分配（同一上游过滤前后颜色不变，8 槽 light / dark 双模式经 dataviz 调色板校验器验证通过）；新增暗色模式（跟随系统 `prefers-color-scheme`）；重拉数据时保留旧渲染降透明度（不闪骨架屏）。**模块化留扩展**：页面主体为 `<div class="module">`（用量统计为模块一），后续功能各成一模块并列追加；服务端（`core/gui.js`）路由从 if 链改为 `API_ROUTES` 注册表（新数据接口加一行注册，token 校验 / 404 兜底框架统一处理）。
+  - **修复趋势图空渲染 bug**：某小时桶只覆盖部分上游时 `merged[tk][u]` 为 undefined 抛 TypeError（控制台实锤），补齐矩阵（缺失上游按 0 条目、折线落到 0）。
+  - 实测：`cc-bridge stats`（聚合 / 单上游）终端输出 + 提示语正常；`cc-bridge dashboard` 起服务（token 校验：无 / 错 token 403、带 token 200、未知路径 404）；`/api/stats` 返回 totals / upstreamTotals / series 与既有 keys / models 两表口径交叉核对一致（各维度 reqs 合计相等）；Chrome headless 截图确认页面渲染完整（趋势图双系列折线、图例、刻度、三张明细表、无控制台报错）。
+
 ### 修复（TODO / MEMO 编号加粗脚本截断事故：批量脚本切片 bug 把条目正文截空，从多恢复源全量重建）
 
 - **为什么改**：上一条「全量补编号」执行时，第二步「编号加粗」脚本存在切片 bug（`m.group(0)[m.end(3)+1:]` 起点算错），把所有被匹配条目的正文截成空壳（只剩 `- [ ] **Tn** `），共波及 1 个文件 3 条。发现后立即启动恢复（无 Time Machine / APFS 快照可用）。

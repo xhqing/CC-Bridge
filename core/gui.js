@@ -1,7 +1,8 @@
 'use strict';
 
-// 用量统计 GUI：`cc-bridge stats`（默认）在本地起一个临时 HTTP 服务、自动打开浏览器
-// 呈现统计面板，查完 Ctrl-C 退出。数据接口复用 core/stats.js 的 aggregate()（读
+// 用量统计 dashboard：`cc-bridge dashboard`（或 `cc-bridge stats --gui`）在本地起
+// 一个临时 HTTP 服务、自动打开浏览器呈现用量面板（概览卡、趋势图、按上游 / KEY /
+// 模型明细表），查完 Ctrl-C 退出。数据接口复用 core/stats.js 的 aggregate()（读
 // stats-<upstream>.json 快照，daemon 不在跑也能查）。
 //
 // 安全设计：只绑 127.0.0.1（不暴露局域网）；端口优先取 PROXY_PORT+1，被占用则自动
@@ -56,13 +57,24 @@ function sendJSON(res, code, obj) {
   res.end(body);
 }
 
+// 数据接口注册表：路径 → handler(u, res)。后续 dashboard 新模块的数据接口在这里
+// 加一行注册即可（token 校验 / 404 兜底由下方服务框架统一处理，新接口不用重复写）。
+const API_ROUTES = {
+  // 用量统计模块：?from=ISO&to=ISO 起止时间（闭区间，可只带一侧）。空 → 不设限（全量）。
+  '/api/stats': (u, res) => {
+    const from = u.searchParams.get('from') || '';
+    const to = u.searchParams.get('to') || '';
+    sendJSON(res, 200, aggregate(from, to));
+  },
+};
+
 // 起 GUI 服务并打开浏览器。opts: { basePort }。返回 Promise<void>（Ctrl-C / 进程
 // 退出时 resolve）。服务只活在本进程生命周期内——CLI 命令退出即全部清理。
 async function startGui(opts = {}) {
   const basePort = opts.basePort || 8788;
   const port = await findFreePort(basePort);
   if (!port) {
-    throw new Error(`no free port found from ${basePort} to ${basePort + 19} for the stats GUI`);
+    throw new Error(`no free port found from ${basePort} to ${basePort + 19} for the dashboard`);
   }
   const token = crypto.randomBytes(16).toString('hex');
   const rootUrl = `http://127.0.0.1:${port}/?token=${token}`;
@@ -85,12 +97,10 @@ async function startGui(opts = {}) {
       }
       return;
     }
-    if (req.method === 'GET' && u.pathname === '/api/stats') {
-      // ?from=ISO&to=ISO：起止时间（闭区间，可只带一侧）。空 → 不设限（全量）。
-      const from = u.searchParams.get('from') || '';
-      const to = u.searchParams.get('to') || '';
+    const handler = API_ROUTES[u.pathname];
+    if (req.method === 'GET' && handler) {
       try {
-        sendJSON(res, 200, aggregate(from, to));
+        handler(u, res);
       } catch (e) {
         sendJSON(res, 500, { error: e.message });
       }
@@ -100,14 +110,14 @@ async function startGui(opts = {}) {
   });
 
   await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
-  console.log(`[bridge] stats GUI listening on ${rootUrl}`);
+  console.log(`[bridge] usage dashboard listening on ${rootUrl}`);
   openBrowser(rootUrl);
   console.log('[bridge] (browser not opened? copy the URL above manually)');
   console.log('[bridge] press Ctrl-C to exit');
 
   for (const sig of ['SIGINT', 'SIGTERM']) {
     process.on(sig, () => {
-      console.log(`\n[bridge] ${sig} received, closing stats GUI`);
+      console.log(`\n[bridge] ${sig} received, closing usage dashboard`);
       server.close(() => process.exit(0));
       setTimeout(() => process.exit(0), 300); // close 卡住（长连接等）也最多等 300ms
     });

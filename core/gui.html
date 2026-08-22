@@ -3,11 +3,22 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>cc-bridge · 用量统计</title>
+<title>cc-bridge dashboard</title>
 <style>
   :root {
     --bg: #f6f7f9; --card: #ffffff; --ink: #1f2328; --muted: #6b7280;
     --line: #e5e7eb; --accent: #3b82f6; --num: #175cd3;
+    /* 上游系列色（categorical，固定顺序分配，浅色模式）——经 dataviz 校验器验证 */
+    --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100;
+    --s5: #e87ba4; --s6: #008300; --s7: #4a3aa7; --s8: #e34948;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111418; --card: #1f2328; --ink: #e6e8eb; --muted: #9aa1aa;
+      --line: #333941; --accent: #3b82f6; --num: #7cb3f7;
+      --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+      --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+    }
   }
   * { box-sizing: border-box; }
   body {
@@ -25,44 +36,66 @@
   .controls label { color: var(--muted); font-size: 13px; }
   input[type="datetime-local"] {
     font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px;
-    background: #fff; color: var(--ink);
+    background: var(--card); color: var(--ink); color-scheme: light dark;
   }
   button {
     font: inherit; padding: 5px 12px; border: 1px solid var(--line); border-radius: 6px;
-    background: #fff; cursor: pointer; color: var(--ink);
+    background: var(--card); cursor: pointer; color: var(--ink);
   }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  button:hover { filter: brightness(0.97); }
+  button:hover { filter: brightness(0.94); }
   .quick { display: flex; gap: 6px; }
   .quick button.active { border-color: var(--accent); color: var(--accent); font-weight: 600; }
-  main { max-width: 1100px; margin: 0 auto; padding: 20px 24px 40px; }
+  main { max-width: 1160px; margin: 0 auto; padding: 20px 24px 40px; }
   .meta { color: var(--muted); font-size: 13px; margin: 4px 0 16px; }
   .meta b { color: var(--ink); font-weight: 600; }
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
-  .card {
-    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
-    padding: 12px 16px;
-  }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; }
   .card .k { color: var(--muted); font-size: 12px; }
-  .card .v { font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .card .v { font-size: 20px; font-weight: 650; margin-top: 2px; }
   .card .v small { font-size: 12px; font-weight: 400; color: var(--muted); margin-left: 2px; }
   section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px 20px; margin-bottom: 20px; overflow-x: auto; }
   section h2 { font-size: 14px; margin: 0 0 10px; font-weight: 600; }
+  section h2 .sub { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 8px; }
+  .chart-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--muted); }
+  .legend .item { display: inline-flex; align-items: center; gap: 5px; }
+  .legend .swatch { width: 12px; height: 3px; border-radius: 2px; display: inline-block; }
+  .metric-switch { display: inline-flex; gap: 0; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .metric-switch button { border: none; border-radius: 0; padding: 3px 10px; font-size: 12px; }
+  .metric-switch button.active { background: var(--accent); color: #fff; }
+  .chart-wrap { position: relative; min-height: 240px; }
+  .chart-wrap svg text { font-variant-numeric: tabular-nums; }
+  .chart-wrap.refetching { opacity: 0.45; pointer-events: none; transition: opacity .15s; }
+  .tooltip {
+    position: absolute; pointer-events: none; display: none; z-index: 3;
+    background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 10px; font-size: 12px; line-height: 1.5; box-shadow: 0 4px 14px rgba(0,0,0,.12);
+    min-width: 180px;
+  }
+  .tooltip .tt-time { color: var(--muted); margin-bottom: 4px; }
+  .tooltip .row { display: flex; align-items: center; gap: 6px; }
+  .tooltip .row .key { width: 10px; height: 3px; border-radius: 2px; flex: none; }
+  .tooltip .row .name { color: var(--muted); flex: 1 1 auto; }
+  .tooltip .row .val { font-weight: 600; font-variant-numeric: tabular-nums; }
   table { border-collapse: collapse; width: 100%; }
   th, td { padding: 7px 10px; text-align: right; white-space: nowrap; }
   th:first-child, td:first-child { text-align: left; }
   thead th { color: var(--muted); font-weight: 500; font-size: 12px; border-bottom: 1px solid var(--line); }
-  tbody tr:nth-child(even) { background: #fafbfc; }
+  tbody tr:nth-child(even) { background: color-mix(in srgb, var(--muted) 5%, transparent); }
   tbody tr.total td { border-top: 1px solid var(--line); font-weight: 650; }
   td.n { font-variant-numeric: tabular-nums; }
   td.hit { color: var(--num); font-variant-numeric: tabular-nums; }
   .empty { color: var(--muted); padding: 24px 0; text-align: center; }
   footer { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  /* 模块容器：dashboard 里每个功能块（当前只有用量统计，后续新功能各成一模块）包在
+     .module 下，与全局筛选行（header）解耦——后续模块可带自己的数据接口与局部控件。 */
+  .module > .module-title { font-size: 15px; font-weight: 650; margin: 4px 0 12px; }
 </style>
 </head>
 <body>
 <header>
-  <h1>cc-bridge 用量统计<span class="tag" id="upstreams"></span></h1>
+  <h1>cc-bridge dashboard<span class="tag" id="upstreams"></span></h1>
   <div class="controls">
     <label for="from">起始</label>
     <input type="datetime-local" id="from">
@@ -79,20 +112,42 @@
 </header>
 <main>
   <div class="meta" id="meta"></div>
-  <div class="cards" id="cards"></div>
-  <section>
-    <h2>按 KEY（key-name）</h2>
-    <div id="keys"></div>
-  </section>
-  <section>
-    <h2>按模型（upstream / model）</h2>
-    <div id="models"></div>
-  </section>
-  <footer>
-    口径：input = 输入 token 合计（已含缓存命中）；hit% = cache-hit / input；
-    命中率只计 server 侧能解析 usage 的请求（上游未返回 usage 的请求仅计入 reqs）。
-    时间粒度为小时桶：窗口边界上的小时整桶计入。数据来自 ~/.cc-bridge/stats-&lt;upstream&gt;.json 快照（daemon 停止也可查询）。
-  </footer>
+  <!-- 用量统计模块：dashboard 的第一个模块。后续新功能各包一个 <div class="module"> 追加
+    在此后（带自己的 module-title 与内部 section），全局筛选行（header）与既有模块不动。 -->
+  <div class="module">
+    <div class="module-title">用量统计</div>
+    <div class="cards" id="cards"></div>
+    <section>
+      <div class="chart-head">
+        <h2>用量趋势<span class="sub" id="trend-gran"></span></h2>
+        <div class="metric-switch" id="metric">
+          <button data-metric="requests" class="active">请求数</button>
+          <button data-metric="inputTokens">输入</button>
+          <button data-metric="outputTokens">输出</button>
+        </div>
+        <div class="legend" id="legend"></div>
+      </div>
+      <div class="chart-wrap" id="chart-wrap"><div class="tooltip" id="tooltip"></div></div>
+    </section>
+    <section>
+      <h2>按上游</h2>
+      <div id="byupstream"></div>
+    </section>
+    <section>
+      <h2>按 KEY（key-name）</h2>
+      <div id="keys"></div>
+    </section>
+    <section>
+      <h2>按模型（upstream / model）</h2>
+      <div id="models"></div>
+    </section>
+    <footer>
+      口径：input = 输入 token 合计（已含缓存命中）；hit% = cache-hit / input；created = 缓存创建 token；
+      命中率只计 server 侧能解析 usage 的请求（上游未返回 usage 的请求仅计入 reqs）。
+      时间粒度为小时桶：窗口边界上的小时整桶计入。趋势图按小时呈现、超过 48 个桶时按天归并。
+      数据来自 ~/.cc-bridge/stats-&lt;upstream&gt;.json 快照（daemon 停止也可查询）。
+    </footer>
+  </div>
 </main>
 <script>
 'use strict';
@@ -103,6 +158,15 @@ const TOKEN = new URLSearchParams(location.search).get('token') || '';
 const $ = (id) => document.getElementById(id);
 const fmt = (n) => (n || 0).toLocaleString('en-US');
 const hitPct = (inp, hit) => (inp > 0 ? (hit / inp * 100).toFixed(1) + '%' : '-');
+
+// 系列色槽：按上游名排序后固定顺序分配（同一上游在过滤前后颜色不变，不随排名重涂）。
+const SLOTS = ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8'];
+const cssColor = (slot) => getComputedStyle(document.documentElement).getPropertyValue(`--${slot}`).trim() || '#2a78d6';
+const seriesColor = {}; // upstream -> slot 下标（首次见到该上游时分配，之后固定）
+function colorOf(upstream) {
+  if (!(upstream in seriesColor)) seriesColor[upstream] = Object.keys(seriesColor).length % SLOTS.length;
+  return cssColor(SLOTS[seriesColor[upstream]]);
+}
 
 // datetime-local 的值是本地时区（无秒）："YYYY-MM-DDTHH:MM"。查询时按本地时区解释、
 // 转成 ISO 交给服务端；初始化默认窗口 = 近 7 天。
@@ -123,26 +187,35 @@ function toLocalInput(d) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+let lastData = null;      // 最近一次 /api/stats 返回（趋势图重绘免重新拉取）
+let curMetric = 'requests';
+
 async function load(fromISO, toISO) {
   const q = new URLSearchParams();
   if (fromISO) q.set('from', fromISO);
   if (toISO) q.set('to', toISO);
   if (TOKEN) q.set('token', TOKEN);
+  const wrap = $('chart-wrap');
+  wrap.classList.add('refetching'); // 重拉期间保留旧渲染、降透明度（不闪骨架屏）
   let data;
   try {
     const res = await fetch(`/api/stats?${q}`);
     data = await res.json();
     if (!res.ok) throw new Error(data.error || res.status);
   } catch (e) {
-    $('meta').textContent = `加载失败：${e.message}（服务是否已退出？终端里 Ctrl-C 会关闭 GUI 服务）`;
+    wrap.classList.remove('refetching');
+    $('meta').textContent = `加载失败：${e.message}（服务是否已退出？终端里 Ctrl-C 会关闭 dashboard 服务）`;
     return;
   }
+  wrap.classList.remove('refetching');
+  lastData = data;
   render(data);
 }
 
 function render(data) {
   const keys = Object.entries(data.keys || {}).filter(([, s]) => s.requests > 0).sort(([a], [b]) => a.localeCompare(b));
   const models = Object.entries(data.models || {}).filter(([, s]) => s.requests > 0).sort(([a], [b]) => a.localeCompare(b));
+  const ups = Object.entries(data.upstreamTotals || {}).filter(([, s]) => s.requests > 0).sort(([a], [b]) => a.localeCompare(b));
 
   $('upstreams').textContent = data.upstreams.length ? `· ${data.upstreams.join(' + ')}` : '';
 
@@ -150,32 +223,184 @@ function render(data) {
   const wTo = data.window && data.window.to ? new Date(data.window.to).toLocaleString() : '-';
   $('meta').innerHTML = `窗口内数据覆盖：<b>${wFrom}</b> → <b>${wTo}</b>（请求范围 ${data.window && data.window.requestedFrom ? new Date(data.window.requestedFrom).toLocaleString() : '不限'} → ${data.window && data.window.requestedTo ? new Date(data.window.requestedTo).toLocaleString() : '不限'}）`;
 
-  const total = keys.length || models.length
-    ? [keys, models].flat().reduce((t, [, s]) => ({
-        requests: t.requests + s.requests, inputTokens: t.inputTokens + s.inputTokens,
-        outputTokens: t.outputTokens + s.outputTokens, cacheHitTokens: t.cacheHitTokens + s.cacheHitTokens,
-      }), { requests: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0 })
-    : { requests: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0 };
-  // total 上面把 keys 与 models 各加了一遍（同一笔用量两个维度），除回 2。
-  for (const k of Object.keys(total)) total[k] = Math.round(total[k] / 2);
-
+  const total = data.totals || { requests: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheCreatedTokens: 0 };
   $('cards').innerHTML = `
     <div class="card"><div class="k">请求数</div><div class="v">${fmt(total.requests)}</div></div>
     <div class="card"><div class="k">输入 Token</div><div class="v">${fmt(total.inputTokens)}</div></div>
     <div class="card"><div class="k">缓存命中 Token</div><div class="v">${fmt(total.cacheHitTokens)}</div></div>
     <div class="card"><div class="k">缓存命中率</div><div class="v">${hitPct(total.inputTokens, total.cacheHitTokens)}</div></div>
+    <div class="card"><div class="k">缓存创建 Token</div><div class="v">${fmt(total.cacheCreatedTokens)}</div></div>
     <div class="card"><div class="k">输出 Token</div><div class="v">${fmt(total.outputTokens)}</div></div>
   `;
 
+  $('byupstream').innerHTML = ups.length ? tableHTML(ups) : `<div class="empty">窗口内无按上游数据</div>`;
   $('keys').innerHTML = keys.length ? tableHTML(keys) : `<div class="empty">窗口内无按 KEY 数据</div>`;
   $('models').innerHTML = models.length ? tableHTML(models) : `<div class="empty">窗口内无按模型数据</div>`;
+
+  drawTrend(data.series || []);
 }
 
+// --- 趋势图（纯 SVG 多系列折线） ------------------------------------------------
+// series: [{hk, upstream, bucket}]（小时 × 上游）。超过 48 个桶自动按天归并，避免横轴
+// 密集到不可读。hover：竖 crosshair 吸附最近 X + 单 tooltip 列出该 X 上所有上游数值。
+function drawTrend(series) {
+  const wrap = $('chart-wrap');
+  wrap.querySelectorAll('svg').forEach((n) => n.remove());
+  const ups = [...new Set(series.map((r) => r.upstream))].sort();
+  if (!series.length || !ups.length) {
+    wrap.insertAdjacentHTML('beforeend', `<div class="empty" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center">窗口内无趋势数据</div>`);
+    $('legend').innerHTML = '';
+    $('trend-gran').textContent = '';
+    return;
+  }
+  // 粒度自适应：不同小时桶数 > 48 → 按天归并（YYYY-MM-DD）。
+  const hks = [...new Set(series.map((r) => r.hk))];
+  const daily = hks.length > 48;
+  const granLabel = daily ? '按天归并' : '按小时';
+  $('trend-gran').textContent = `· ${granLabel}`;
+  const keyOf = (hk) => (daily ? hk.slice(0, 10) : hk);
+  // 归并：{tkey: {upstream: bucket}}
+  const merged = {};
+  for (const r of series) {
+    const tk = keyOf(r.hk);
+    (merged[tk] ||= {})[r.upstream] ||= { requests: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheCreatedTokens: 0 };
+    const t = merged[tk][r.upstream];
+    t.requests += r.bucket.requests || 0;
+    t.inputTokens += r.bucket.inputTokens || 0;
+    t.outputTokens += r.bucket.outputTokens || 0;
+    t.cacheHitTokens += r.bucket.cacheHitTokens || 0;
+    t.cacheCreatedTokens += r.bucket.cacheCreatedTokens || 0;
+  }
+  const tkeys = Object.keys(merged).sort(); // UTC 字典序 = 时间序
+  // 补齐矩阵：某小时桶只覆盖部分上游时，缺失的上游按 0 条目（折线在该点落到 0）。
+  for (const tk of tkeys) for (const u of ups) merged[tk][u] ||= { requests: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheCreatedTokens: 0 };
+
+  const W = wrap.clientWidth || 960;
+  const H = 240;
+  const M = { top: 14, right: 16, bottom: 26, left: 64 };
+  const plotW = W - M.left - M.right;
+  const plotH = H - M.top - M.bottom;
+  const x = (i) => M.left + (tkeys.length <= 1 ? plotW / 2 : (i / (tkeys.length - 1)) * plotW);
+  const maxV = Math.max(1, ...tkeys.flatMap((tk) => ups.map((u) => merged[tk][u][curMetric] || 0)));
+  const y = (v) => M.top + plotH - (v / maxV) * plotH;
+
+  // y 轴刻度：取「漂亮」的步长（1/2/5×10^n），约 4 条网格线。
+  const step = niceStep(maxV / 4);
+  const ticks = [];
+  for (let v = 0; v <= maxV; v += step) ticks.push(v);
+  const grid = ticks.map((v) => `
+    <line x1="${M.left}" y1="${y(v)}" x2="${W - M.right}" y2="${y(v)}" stroke="var(--line)" stroke-width="1"/>
+    <text x="${M.left - 8}" y="${y(v) + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${compact(v)}</text>`).join('');
+
+  // x 轴标签：最多 ~8 个均匀采样。
+  const labelIdx = labelIndices(tkeys.length, 8);
+  const xlabels = labelIdx.map((i) => `
+    <text x="${x(i)}" y="${H - 8}" text-anchor="middle" font-size="11" fill="var(--muted)">${xLabel(tkeys[i], daily)}</text>`).join('');
+
+  // 折线（2px、圆角连接；线端点 dot 8px + 2px 表面色描边环）。
+  const paths = ups.map((u) => {
+    const pts = tkeys.map((tk, i) => [x(i), y(merged[tk][u][curMetric] || 0)]);
+    const d = pts.map(([px, py], i) => `${i ? 'L' : 'M'}${px.toFixed(1)},${py.toFixed(1)}`).join('');
+    const [ex, ey] = pts[pts.length - 1];
+    return `
+      <path d="${d}" fill="none" stroke="${colorOf(u)}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+      <circle cx="${ex}" cy="${ey}" r="4" fill="${colorOf(u)}" stroke="var(--card)" stroke-width="2"/>`;
+  }).join('');
+
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('width', W);
+  svg.setAttribute('height', H);
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.innerHTML = `
+    ${grid}
+    <line x1="${M.left}" y1="${M.top + plotH}" x2="${W - M.right}" y2="${M.top + plotH}" stroke="var(--line)" stroke-width="1"/>
+    ${xlabels}
+    <line id="crosshair" x1="0" y1="${M.top}" x2="0" y2="${M.top + plotH}" stroke="var(--muted)" stroke-width="1" opacity="0"/>
+    ${paths}`;
+  wrap.appendChild(svg);
+
+  // 图例（≥2 系列必有；线形 swatch 对应折线）。
+  $('legend').innerHTML = ups.map((u) => `
+    <span class="item"><span class="swatch" style="background:${colorOf(u)}"></span>${escapeHTML(u)}</span>`).join('');
+
+  // hover 层：crosshair 吸附最近 tkey，tooltip 列出全部上游该点数值（值为主、名为辅）。
+  const cross = svg.querySelector('#crosshair');
+  const tip = $('tooltip');
+  const METRIC_LABEL = { requests: '请求数', inputTokens: '输入 Token', outputTokens: '输出 Token' };
+  svg.addEventListener('pointermove', (ev) => {
+    const rect = svg.getBoundingClientRect();
+    const px = (ev.clientX - rect.left) * (W / rect.width);
+    let bi = 0, bd = Infinity;
+    tkeys.forEach((tk, i) => { const d = Math.abs(x(i) - px); if (d < bd) { bd = d; bi = i; } });
+    cross.setAttribute('x1', x(bi)); cross.setAttribute('x2', x(bi));
+    cross.setAttribute('opacity', '0.6');
+    tip.style.display = 'block';
+    tip.innerHTML = '';
+    const timeDiv = document.createElement('div');
+    timeDiv.className = 'tt-time';
+    timeDiv.textContent = `${xLabelFull(tkeys[bi], daily)} · ${METRIC_LABEL[curMetric]}`;
+    tip.appendChild(timeDiv);
+    for (const u of ups) {
+      const row = document.createElement('div');
+      row.className = 'row';
+      const key = document.createElement('span'); key.className = 'key'; key.style.background = colorOf(u);
+      const name = document.createElement('span'); name.className = 'name'; name.textContent = u;
+      const val = document.createElement('span'); val.className = 'val'; val.textContent = fmt(merged[tkeys[bi]][u][curMetric]);
+      row.append(key, name, val);
+      tip.appendChild(row);
+    }
+    // tooltip 跟随指针但不出画布右缘。
+    const wrapRect = wrap.getBoundingClientRect();
+    let tx = ev.clientX - wrapRect.left + 14;
+    if (tx + 200 > wrapRect.width) tx = ev.clientX - wrapRect.left - 214;
+    tip.style.left = `${tx}px`;
+    tip.style.top = `${Math.max(0, ev.clientY - wrapRect.top - 20)}px`;
+  });
+  svg.addEventListener('pointerleave', () => {
+    cross.setAttribute('opacity', '0');
+    tip.style.display = 'none';
+  });
+}
+
+// x 轴标签采样索引（首尾都含）。
+function labelIndices(n, maxLabels) {
+  if (n <= maxLabels) return Array.from({ length: n }, (_, i) => i);
+  const set = new Set([0, n - 1]);
+  const stride = (n - 1) / (maxLabels - 1);
+  for (let i = 1; i < maxLabels - 1; i++) set.add(Math.round(i * stride));
+  return [...set].sort((a, b) => a - b);
+}
+
+// 「漂亮」刻度步长：1/2/5 × 10^n。
+function niceStep(raw) {
+  const exp = Math.floor(Math.log10(raw || 1));
+  const base = Math.pow(10, exp);
+  for (const m of [1, 2, 5, 10]) {
+    if (m * base >= raw) return m * base;
+  }
+  return 10 * base;
+}
+
+const compact = (v) => (v >= 1e6 ? (v / 1e6).toFixed(v % 1e6 === 0 ? 0 : 1) + 'M' : v >= 1e4 ? (v / 1e3).toFixed(0) + 'K' : fmt(v));
+
+// x 轴刻度短标签：小时桶显示 "MM-DD HH:00"（天归并显示 "MM-DD"），UTC → 本地呈现。
+function xLabel(tk, daily) {
+  const d = new Date(`${tk}${daily ? 'T00:00:00Z' : ':00:00Z'}`);
+  const p = (n) => String(n).padStart(2, '0');
+  return daily ? `${p(d.getMonth() + 1)}-${p(d.getDate())}` : `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:00`;
+}
+function xLabelFull(tk, daily) {
+  const d = new Date(`${tk}${daily ? 'T00:00:00Z' : ':00:00Z'}`);
+  return daily ? d.toLocaleDateString() : d.toLocaleString();
+}
+
+// --- 明细表（三张共用一个渲染器：reqs / 输入 / 命中 / 命中率 / 创建 / 输出 + total） ----
 function tableHTML(rows) {
   const total = rows.reduce((t, [, s]) => ({
     requests: t.requests + (s.requests || 0), inputTokens: t.inputTokens + (s.inputTokens || 0),
     outputTokens: t.outputTokens + (s.outputTokens || 0), cacheHitTokens: t.cacheHitTokens + (s.cacheHitTokens || 0),
-  }), { requests: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0 });
+    cacheCreatedTokens: t.cacheCreatedTokens + (s.cacheCreatedTokens || 0),
+  }), { requests: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheCreatedTokens: 0 });
   const tr = rows.map(([label, s]) => `
     <tr>
       <td>${escapeHTML(label)}</td>
@@ -183,12 +408,13 @@ function tableHTML(rows) {
       <td class="n">${fmt(s.inputTokens)}</td>
       <td class="n">${fmt(s.cacheHitTokens)}</td>
       <td class="hit">${hitPct(s.inputTokens, s.cacheHitTokens)}</td>
+      <td class="n">${fmt(s.cacheCreatedTokens)}</td>
       <td class="n">${fmt(s.outputTokens)}</td>
     </tr>`).join('');
   return `
   <table>
     <thead><tr>
-      <th>名称</th><th>reqs</th><th>输入 Token</th><th>缓存命中</th><th>命中率</th><th>输出 Token</th>
+      <th>名称</th><th>reqs</th><th>输入 Token</th><th>缓存命中</th><th>命中率</th><th>缓存创建</th><th>输出 Token</th>
     </tr></thead>
     <tbody>
       ${tr}
@@ -198,6 +424,7 @@ function tableHTML(rows) {
         <td class="n">${fmt(total.inputTokens)}</td>
         <td class="n">${fmt(total.cacheHitTokens)}</td>
         <td class="hit">${hitPct(total.inputTokens, total.cacheHitTokens)}</td>
+        <td class="n">${fmt(total.cacheCreatedTokens)}</td>
         <td class="n">${fmt(total.outputTokens)}</td>
       </tr>
     </tbody>
@@ -208,7 +435,7 @@ function escapeHTML(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-// 事件：查询按钮 / 快捷窗口。
+// 事件：查询按钮 / 快捷窗口 / 趋势指标切换。
 $('apply').addEventListener('click', () => {
   for (const b of $('quick').querySelectorAll('button')) b.classList.remove('active');
   load(localToISO($('from').value), localToISO($('to').value));
@@ -227,6 +454,20 @@ for (const b of $('quick').querySelectorAll('button')) {
     }
   });
 }
+for (const b of $('metric').querySelectorAll('button')) {
+  b.addEventListener('click', () => {
+    for (const x of $('metric').querySelectorAll('button')) x.classList.remove('active');
+    b.classList.add('active');
+    curMetric = b.dataset.metric;
+    if (lastData) drawTrend(lastData.series || []); // 已有数据直接重绘，不重新拉取
+  });
+}
+// 窗口尺寸变化时按新宽度重绘（折线图宽度自适应容器）。
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  if (resizeTimer) clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { if (lastData) drawTrend(lastData.series || []); }, 150);
+});
 
 // 初始化：默认近 7 天窗口。
 setQuickDefault(7);
