@@ -14,6 +14,13 @@
   - **根因缓解**：出站请求 `setSocketKeepAlive(true, 15000)`——长流期间 TCP 层静默时中间设备（NAT / 负载均衡）会把连接当死连接 RST，keepalive 探测包保持连接活性证据，降低被掐概率（缓解而非根治，服务端主动回收仍可能发生）。
 - **实测验证**：`tmp/test-sse-abort.js` 端到端三场景 ALL-PASS——① 正常完整流不受影响（200 + message_stop、无 error 事件）；② **中途 RST 主场景：客户端收到 200 + 部分 delta + `event: error`（overloaded_error）+ 干净 end、无网络错误**（对照旧行为：TCP 硬重置）；③ 429 → 同 KEY 退避重试成功（重试窗口在首响应前，不受改造影响，上游命中 2 次）。已重装全局并重启 glm 守护进程，health ok、生产请求正常走新桥接。
 
+### 变更（断流诊断日志：断流时刻的空闲时长 + 已收字节数）
+
+- **为什么改**：上一条的 SSE error 收尾修复上线后，自动重试在生效（断流后 CC 约 1s 内重发整轮），但断流本身依旧高发（2026-08-30 本地 13:34–14:12 约 40 分钟 9 次 ECONNRESET；对照 ds 上游三周仅 2 次，问题特异于 glm/bigmodel.cn 侧）。15s TCP keepalive 已随上条上线但未见止效，且现有日志只有错误类型与总耗时，**无法分辨「空闲掐」（长静默后被服务端 / 中间设备当死连接回收——idle 大，怀疑 GLM 长思考期间不吐 SSE 字节所致）与「活跃掐」（数据流动中被掐——idle 小，查网络路径）**，对症方向完全不同，须先定位。
+- **改了什么**（`core/server.js`）：请求闭包新增 `lastUpDataAt` / `upBytes` 计数与 `streamDiag()` 格式化函数；SSE 转发的 `upRes.on('data')` 刷新两计数；两个断流错误路径（请求级迟到错误、响应流 `upRes.on('error')`）的日志拼接 `，断流诊断：距上一包 Xms、已收 YB`（未收到任何数据包时输出对应提示）。仅日志增强，不改任何转发 / 重试行为。
+- **实测验证**：本地模拟上游（发一包数据后静默 1.5s RST）走桥请求，日志正确输出 `upstream 流错误：aborted，断流诊断：距上一包 1502ms、已收 176B`。
+- **环境纪律整改（同日）**：发现全局 `cc-bridge` 被 `npm link` 指向开发目录、glm daemon 运行开发源码——违反项目规则 `cc-bridge-install.md`。已解除：从 GitHub Release v2.13.0 重新全局安装（`npm list -g` 无 link 箭头）并重启 glm daemon 从安装副本运行（pid 81912）。**注意：2.14.0 的两处改动（SSE error 收尾 + 本诊断日志）现仅存在于开发目录，生产 glm 桥回退为 v2.13.0 行为（迟到错误仍硬掐、无诊断），待发版后恢复。**同日按用户裁定将「运行版本与开发版本隔离」立为全局规则（`~/.claude/rules/runtime-dev-isolation.md`，任何项目禁止 npm link / 常驻服务直跑开发源码，开发代码须发布 GitHub Release 后从 Release 安装使用）。
+
 ## [2.13.0] - 2026-08-22
 
 （本版条目内容即原 [Unreleased] 段全部记录：T4 执行请求体全面透传 + 按 KEY 隐私选项 HIDE_USER_ID、T11 思考等级钉死功能下线改为透传、T6 直连基线实测与 T4/T5/T7/T8 拟真度系列待办闭环。发布定版时归入本版本号。）

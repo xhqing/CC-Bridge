@@ -393,6 +393,19 @@ function startServer(cfg, adapter) {
       // 重试 / 换 KEY 窗口关闭：响应头已发出、流已部分转发，无法透明重试。
       let responseStarted = false;
 
+      // 断流诊断：记录上游响应最近一次收到数据的时刻与累计收到的字节数。断流
+      // （ECONNRESET 等）发生时，据「距上一包的空闲时长 + 已收字节数」可分辨两种
+      // 掐断模式——空闲掐（长静默后被服务端 / 中间设备当死连接回收，idle 大，典型
+      // 是 GLM 长思考期间不吐 SSE 字节）与活跃掐（数据正在流动中被掐，idle 小）。
+      // 对症处理不同（空闲掐→调 keepalive / 向上游反馈；活跃掐→查网络路径），故
+      // 断流日志必须带上这两个数（2026-08-30 glm 上游每日数十次 reset，待定位）。
+      let lastUpDataAt = 0;
+      let upBytes = 0;
+      function streamDiag() {
+        if (!lastUpDataAt) return '，断流诊断：未收到任何数据包';
+        return `，断流诊断：距上一包 ${Date.now() - lastUpDataAt}ms、已收 ${upBytes}B`;
+      }
+
       // 流式中断收尾：向已开始的 SSE 流补发一个协议内 error 事件后干净 end，
       // 而不是硬掐 TCP（clientRes.destroy()）。硬掐时 CC 只能显示 "Connection
       // closed mid-response" 并停止本轮；而 Anthropic 流式协议允许在任意时刻
@@ -552,6 +565,9 @@ function startServer(cfg, adapter) {
           // 避免 chunk 边界切断中文字符产生 U+FFFD 乱码（单 chunk toString 会丢字节）。
           const decoder = new TextDecoder('utf-8');
           upRes.on('data', (chunk) => {
+            // 刷新断流诊断计数（idle / 累计字节），见变量声明处说明。
+            lastUpDataAt = Date.now();
+            upBytes += chunk.length;
             // 防御：客户端响应已结束 / 已断开（如中途断连已补发 SSE error 收尾）时，
             // 不再往 clientRes 写（write after end 会抛 ERR_STREAM_WRITE_AFTER_END），
             // 直接丢弃上游残留数据并断开源流。
@@ -632,7 +648,10 @@ function startServer(cfg, adapter) {
             if (sseBuf.trim()) clientRes.write(sseBuf);
             clientRes.end();
           });
-          upRes.on('error', (err) => { abortWithSseError(err && err.message); });
+          upRes.on('error', (err) => {
+            log(`  upstream 流错误：${err && err.message}${streamDiag()}`);
+            abortWithSseError(err && err.message);
+          });
         } else {
           // Non-streaming: buffer JSON, record usage, inject modelUsage (when mu), send.
           const respChunks = [];
@@ -854,7 +873,7 @@ function startServer(cfg, adapter) {
           // CC ≥2.1.199 对流内错误事件自动重试整轮，任务不中断（替代原先硬掐 TCP
           // ——硬掐时 CC 端显示 "Connection closed mid-response" 并停轮等人工）。
           if (responseStarted || clientRes.headersSent) {
-            log(`  upstream 迟到错误（响应已开始转发，不重试）：${err.message}（${Date.now() - t0}ms），补发 SSE error 事件收尾（CC 将自动重试）`);
+            log(`  upstream 迟到错误（响应已开始转发，不重试）：${err.message}（${Date.now() - t0}ms）${streamDiag()}，补发 SSE error 事件收尾（CC 将自动重试）`);
             abortWithSseError(err.message);
             return;
           }
