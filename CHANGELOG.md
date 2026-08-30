@@ -8,6 +8,16 @@
 
 ## [Unreleased]
 
+### 变更（流式中断不再硬掐客户端连接：改发协议内 SSE error 事件，触发 CC 自动重试续跑）
+
+- **为什么改**：上游（GLM cn 端点）在长流中途掐断 TCP 的现象慢性存在（glm.log 实证：2026-08-16 起累计 138 次 / 112,420 请求，全局 0.12%，但集中砸在 effort=high 的长回复上——高发窗口实测 100 次请求挂 8 次、中断时长的中位数 108 秒，恰是用户盯着等的那批回复）。桥接此前对这类「迟到错误」的收尾方式是 `clientRes.destroy()` 硬掐 TCP：Claude Code 收到的是 `Connection closed mid-response` 网络错误，**不自动重试、整轮停止等人工**——任务停下来用户还不知道，白白浪费时间。查官方错误文档确认：CC ≥2.1.199 对流内 `overloaded_error` / 5xx 错误**事件**会 mid-stream 自动重试整轮、任务不中断；对硬 TCP 重置则只能停轮。两类失败的差别就在「桥接怎么收尾」——同样的上游断连，硬掐 = 任务停，发协议内错误事件 = CC 退避重发、用户无感。国际站端点当前不可用无法分流对比，故从桥接侧解决。
+- **改了什么**（全在 `core/server.js`）：
+  - **新增 `abortWithSseError(reason)`**（请求闭包内）：响应头已发出且未 end 时，向 SSE 流补发 `event: error` + `{"type":"error","error":{"type":"overloaded_error",...}}` 后干净 `end()`（写失败兜底 destroy）；非流式 / 未发头场景仍走 destroy（无 SSE 通道，CC 按普通连接错误处理）。
+  - **三处硬掐点改调 `abortWithSseError`**：① 请求级迟到错误（主场景，上游掐长流 ECONNRESET 落请求级 error）；② 响应流 `upRes.on('error')`；③ `handleUpstreamResponse` 入口丢弃迟到响应的双保险。原「不重试」判定保留——重试会对同一 clientRes 二次 writeHead 打死 daemon（2026-08-16 修复的崩溃根因），改的只是收尾方式。
+  - **防御**：SSE 转发的 `data` / `end` 事件入口加 `clientRes.destroyed || writableEnded` 检查，已补发 error 收尾后上游残留数据直接丢弃断源，防 `ERR_STREAM_WRITE_AFTER_END`。
+  - **根因缓解**：出站请求 `setSocketKeepAlive(true, 15000)`——长流期间 TCP 层静默时中间设备（NAT / 负载均衡）会把连接当死连接 RST，keepalive 探测包保持连接活性证据，降低被掐概率（缓解而非根治，服务端主动回收仍可能发生）。
+- **实测验证**：`tmp/test-sse-abort.js` 端到端三场景 ALL-PASS——① 正常完整流不受影响（200 + message_stop、无 error 事件）；② **中途 RST 主场景：客户端收到 200 + 部分 delta + `event: error`（overloaded_error）+ 干净 end、无网络错误**（对照旧行为：TCP 硬重置）；③ 429 → 同 KEY 退避重试成功（重试窗口在首响应前，不受改造影响，上游命中 2 次）。已重装全局并重启 glm 守护进程，health ok、生产请求正常走新桥接。
+
 ### 变更（T4 执行：请求体改全面透传——删四类剥离；新增按 KEY 隐私选项 HIDE_USER_ID）
 
 - **为什么改**：T4 方案定稿（见下条）裁定不加 `FIDELITY` 开关、透传即唯一行为：各剥离改写（`context_management` / Anthropic 专有 system 段 / `cache_control` 剥离 + tools 尾重打）的理由经 T6 直连基线实测与官方文档核对全部站不住——端点对不识别字段按忽略处理（剥离纯制造签名），tools 尾打标偏离直连形态且对智谱显式缓存有害；`metadata.user_id` 改为按 KEY 的隐私选项（`API_KEY_n_HIDE_USER_ID`，默认透传、配 1 清空），既保留「不希望设备标识离开本机」的隐私能力，又不强制全局偏离直连形态。开源仓库措辞纪律：功能文档一律中性表述（隐私偏好场景），不出现具体使用场景暗示。

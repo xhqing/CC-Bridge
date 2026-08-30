@@ -390,9 +390,38 @@ function startServer(cfg, adapter) {
       // 的 base 参数）。
       let msgStartBase = null;
       // 上游响应是否已开始写给客户端（handleUpstreamResponse 已处理过一次）。置真后
-      // 重试 / 换 KEY 窗口关闭：响应头已发出、流已部分转发，无法透明重试，迟到的
-      // 错误只能断开客户端连接（Claude Code 会自行重发该请求）。
+      // 重试 / 换 KEY 窗口关闭：响应头已发出、流已部分转发，无法透明重试。
       let responseStarted = false;
+
+      // 流式中断收尾：向已开始的 SSE 流补发一个协议内 error 事件后干净 end，
+      // 而不是硬掐 TCP（clientRes.destroy()）。硬掐时 CC 只能显示 "Connection
+      // closed mid-response" 并停止本轮；而 Anthropic 流式协议允许在任意时刻
+      // 送达 {"type":"error"} 事件，Claude Code ≥2.1.199 对流内 overloaded_error
+      // / 5xx 会自动重试整轮、任务不中断（官方错误文档明文）。两者对用户的差别：
+      // 硬掐 = 任务停、要人工点继续；发错误事件 = CC 退避重发、无感续跑。
+      // 实现注意：CC 对「已收到部分 delta 后的流内 error」同样会重试（v2.1.199
+      // 起 mid-stream retry 覆盖此场景），半截输出会被丢弃重生成，故无需也不应
+      // 尝试续接半截内容。非流式请求没有 SSE 通道，仍走 destroy（CC 按普通连接
+      // 错误处理）。
+      function abortWithSseError(reason) {
+        if (clientRes.headersSent && !clientRes.writableEnded) {
+          try {
+            clientRes.write('event: error\n');
+            clientRes.write(
+              'data: ' + JSON.stringify({
+                type: 'error',
+                error: {
+                  type: 'overloaded_error',
+                  message: 'upstream stream interrupted (' + reason + '); retried by client',
+                },
+              }) + '\n\n',
+            );
+            clientRes.end();
+          } catch { try { clientRes.destroy(); } catch { /* already gone */ } }
+        } else {
+          try { clientRes.destroy(); } catch { /* already gone */ }
+        }
+      }
 
       // Only rewrite the model on /v1/messages POSTs with a JSON body.
       if (clientReq.method === 'POST' && urlPath.startsWith('/v1/messages') && body.length) {
@@ -497,9 +526,9 @@ function startServer(cfg, adapter) {
         // 未捕获异常会打死整个 daemon（2026-08-16 前 glm 27 次 / ds 9 次崩溃的
         // 根因）。丢弃本次迟到的上游响应、断开客户端即可。
         if (responseStarted || clientRes.headersSent) {
-          log(`  ← ${upRes.statusCode}  丢弃迟到响应（响应已开始转发，不二次写头），断开客户端`);
+          log(`  ← ${upRes.statusCode}  丢弃迟到响应（响应已开始转发，不二次写头），补发 SSE error 事件收尾`);
           try { upRes.destroy(); } catch { /* already gone */ }
-          try { clientRes.destroy(); } catch { /* already gone */ }
+          abortWithSseError('late response discarded');
           return;
         }
         responseStarted = true;
@@ -523,6 +552,13 @@ function startServer(cfg, adapter) {
           // 避免 chunk 边界切断中文字符产生 U+FFFD 乱码（单 chunk toString 会丢字节）。
           const decoder = new TextDecoder('utf-8');
           upRes.on('data', (chunk) => {
+            // 防御：客户端响应已结束 / 已断开（如中途断连已补发 SSE error 收尾）时，
+            // 不再往 clientRes 写（write after end 会抛 ERR_STREAM_WRITE_AFTER_END），
+            // 直接丢弃上游残留数据并断开源流。
+            if (clientRes.destroyed || clientRes.writableEnded) {
+              try { upRes.destroy(); } catch { /* already gone */ }
+              return;
+            }
             sseBuf += decoder.decode(chunk, { stream: true });
             let nl;
             while ((nl = sseBuf.indexOf('\n')) >= 0) {
@@ -592,10 +628,11 @@ function startServer(cfg, adapter) {
           });
           upRes.on('end', () => {
             sseBuf += decoder.decode();  // flush 剩余字节（正常为空）
+            if (clientRes.destroyed || clientRes.writableEnded) return; // 已补发 error 收尾，不再写
             if (sseBuf.trim()) clientRes.write(sseBuf);
             clientRes.end();
           });
-          upRes.on('error', () => { try { clientRes.destroy(); } catch {} });
+          upRes.on('error', (err) => { abortWithSseError(err && err.message); });
         } else {
           // Non-streaming: buffer JSON, record usage, inject modelUsage (when mu), send.
           const respChunks = [];
@@ -762,6 +799,11 @@ function startServer(cfg, adapter) {
           headers: buildHeaders(KEYS[keyIdx].value, keyUp),
         };
         activeUpReq = transport.request(opts, (upRes) => {
+          // 出站 socket 开 TCP keepalive：长流（SSE 数十分钟）期间若 TCP 层无数据
+          // 往返，部分中间设备（运营商 NAT / 负载均衡）会把「静默」连接当死连接
+          // RST 掉。keepalive 探测包让连接始终保持活性证据，降低被中途掐断的
+          // 概率（ECONNRESET 在长流高发、缓解而非根治——服务端仍可能主动回收）。
+          activeUpReq.setSocketKeepAlive(true, 15000);
           const status = upRes.statusCode || 502;
           const canRetry = attemptInKey < UPSTREAM_RETRY_DELAYS.length;
 
@@ -807,10 +849,13 @@ function startServer(cfg, adapter) {
         activeUpReq.on('error', (err) => {
           // 响应已开始转发后收到的迟到错误（典型：长流中途被上游掐断，ECONNRESET
           // 落在请求级 error 而非响应流 error）——重试会拿到第二个 200、对同一
-          // clientRes 二次 writeHead 打死 daemon。只能断开客户端，CC 自行重发。
+          // clientRes 二次 writeHead 打死 daemon（2026-08-16 前的崩溃根因），不能
+          // 重试。改为向流内补发 SSE error 事件（overloaded_error）后干净收尾：
+          // CC ≥2.1.199 对流内错误事件自动重试整轮，任务不中断（替代原先硬掐 TCP
+          // ——硬掐时 CC 端显示 "Connection closed mid-response" 并停轮等人工）。
           if (responseStarted || clientRes.headersSent) {
-            log(`  upstream 迟到错误（响应已开始转发，不重试）：${err.message}（${Date.now() - t0}ms），断开客户端`);
-            try { clientRes.destroy(); } catch { /* already gone */ }
+            log(`  upstream 迟到错误（响应已开始转发，不重试）：${err.message}（${Date.now() - t0}ms），补发 SSE error 事件收尾（CC 将自动重试）`);
+            abortWithSseError(err.message);
             return;
           }
           const canRetry = attemptInKey < UPSTREAM_RETRY_DELAYS.length;
