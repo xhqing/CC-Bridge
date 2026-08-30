@@ -2,11 +2,7 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
-## [2.13.0] - 2026-08-22
-
-（本版条目内容即原 [Unreleased] 段全部记录：T4 执行请求体全面透传 + 按 KEY 隐私选项 HIDE_USER_ID、T11 思考等级钉死功能下线改为透传、T6 直连基线实测与 T4/T5/T7/T8 拟真度系列待办闭环。发布定版时归入本版本号。）
-
-## [Unreleased]
+## [2.14.0] - 2026-08-30
 
 ### 变更（流式中断不再硬掐客户端连接：改发协议内 SSE error 事件，触发 CC 自动重试续跑）
 
@@ -17,6 +13,10 @@
   - **防御**：SSE 转发的 `data` / `end` 事件入口加 `clientRes.destroyed || writableEnded` 检查，已补发 error 收尾后上游残留数据直接丢弃断源，防 `ERR_STREAM_WRITE_AFTER_END`。
   - **根因缓解**：出站请求 `setSocketKeepAlive(true, 15000)`——长流期间 TCP 层静默时中间设备（NAT / 负载均衡）会把连接当死连接 RST，keepalive 探测包保持连接活性证据，降低被掐概率（缓解而非根治，服务端主动回收仍可能发生）。
 - **实测验证**：`tmp/test-sse-abort.js` 端到端三场景 ALL-PASS——① 正常完整流不受影响（200 + message_stop、无 error 事件）；② **中途 RST 主场景：客户端收到 200 + 部分 delta + `event: error`（overloaded_error）+ 干净 end、无网络错误**（对照旧行为：TCP 硬重置）；③ 429 → 同 KEY 退避重试成功（重试窗口在首响应前，不受改造影响，上游命中 2 次）。已重装全局并重启 glm 守护进程，health ok、生产请求正常走新桥接。
+
+## [2.13.0] - 2026-08-22
+
+（本版条目内容即原 [Unreleased] 段全部记录：T4 执行请求体全面透传 + 按 KEY 隐私选项 HIDE_USER_ID、T11 思考等级钉死功能下线改为透传、T6 直连基线实测与 T4/T5/T7/T8 拟真度系列待办闭环。发布定版时归入本版本号。）
 
 ### 变更（T4 执行：请求体改全面透传——删四类剥离；新增按 KEY 隐私选项 HIDE_USER_ID）
 
