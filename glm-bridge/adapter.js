@@ -14,6 +14,7 @@
 // max_tokens 钳到目标模型的合法范围，避免过大请求被上游拒绝。
 const MODEL_MAX_TOKENS = {
   'glm-5.3': 131072,
+  'glm-5.3-flash': 131072,
   'glm-5.2': 131072,
   'glm-5.1': 131072,
   'glm-5-turbo': 131072,

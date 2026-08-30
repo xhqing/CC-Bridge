@@ -2,7 +2,15 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
-## [2.14.0] - 2026-08-30
+## [Unreleased]
+
+### 变更（glm-bridge MODEL_MAX_TOKENS 补 glm-5.3-flash 钳制条目）
+
+- **为什么改**：本机 `glm.env` 的 MODEL_MAP 新增 `claude-opus-4-7->glm-5.3-flash` 映射对（让 CC 端切换模型即切 GLM 目标：选 Opus 4.8 = glm-5.3、选 Opus 4.7 = glm-5.3-flash，免改配置免重启），但 `MODEL_MAX_TOKENS` 表缺 glm-5.3-flash 条目——钳制逻辑 `cap == null` 时直接跳过，超上限的 max_tokens 会原样发上游被拒。查官方文档（docs.bigmodel.cn GLM-5.3-Flash 页）确认文本参数与 GLM-5.3 一致、最大输出 128K（131072）。
+- **改了什么**：`glm-bridge/adapter.js` 的 MODEL_MAX_TOKENS 表加一行 `'glm-5.3-flash': 131072`。仅补表项，钳制逻辑与透传行为不变。
+- **实测验证**：`node --check` 通过；本机桥重启后端到端实测——`claude-opus-4-7` 请求经桥返回 `"model":"glm-5.3-flash"`（thinking 正常），`claude-opus-4-8` 回归验证仍返回 `"model":"glm-5.3"`。
+
+## [2.14.0] - 2026-08-30（已发版：GitHub Release v2.14.0，2026-08-30）
 
 ### 变更（流式中断不再硬掐客户端连接：改发协议内 SSE error 事件，触发 CC 自动重试续跑）
 
