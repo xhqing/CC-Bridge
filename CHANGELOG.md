@@ -2,7 +2,7 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [2.15.0] - 2026-08-31
 
 ### 变更（断流续写：正文期断流不再向 CC 报错，prefill 续写从断点无感恢复）
 
