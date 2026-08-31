@@ -65,9 +65,11 @@ give you:
 - **Safety-classifier routing** (`glm`) — Claude Code's auto-mode security
   monitor fires ~3× per agent turn at full model rates; route it to a free
   model or answer it locally at zero cost (`CLASSIFIER_MODE`).
-- **modelUsage injection** — set `CONTEXT_WINDOW` / `MAX_OUTPUT_TOKENS` and the
-  bridge injects the real context window into responses, so the client's
-  context display matches the actual model instead of the spoofed one.
+- **modelUsage injection** — the bridge injects the real context window into
+  responses: per-target values from the adapter's official-docs table by
+  default, overridable via `CONTEXT_WINDOW` / `MAX_OUTPUT_TOKENS`, so the
+  client's context display matches the actual model instead of the spoofed
+  one.
 - **Usage stats** (terminal + local dashboard) persisted across restarts.
 
 ## Available upstreams
@@ -120,11 +122,14 @@ give you:
 - **Per-upstream isolation.** Each upstream has its own config
   (`~/.cc-bridge/<upstream>.env`), pid file, and log file, so several upstreams
   can run as daemons side by side (use different `PROXY_PORT`s).
-- **modelUsage injection (real context window).** Set `CONTEXT_WINDOW` /
-  `MAX_OUTPUT_TOKENS` in the upstream's env and the bridge injects a
+- **modelUsage injection (real context window).** The bridge injects a
   `modelUsage` entry into every response (both under the spoof ID and the
   target), so the client's context-window display matches the actual model —
-  without it, the client would show the spoofed model's window.
+  without it, the client would show the spoofed model's window. Context-window
+  values come from each adapter's official-docs table per target model
+  (e.g. glm-5.3 = 1M, glm-4.6 = 200K), so a multi-pair `MODEL_MAP` gets each
+  window right; explicitly setting `CONTEXT_WINDOW` / `MAX_OUTPUT_TOKENS` in
+  the upstream's env overrides the table.
 - **Usage stats in the terminal + a local dashboard.** `cc-bridge stats`
   prints terminal tables aggregated by key-name and by model across all
   upstreams, with a hint pointing at the richer view. `cc-bridge dashboard`

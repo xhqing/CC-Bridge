@@ -11,6 +11,8 @@
 //   defaultTarget    默认 TARGET_MODEL（配置未填时兜底）
 //   defaultSpoof     默认 SPOOF_MODEL
 //   modelMaxTokens   { modelId: maxOutputTokens } 表，用于钳 max_tokens
+//   modelContextWindow { modelId: contextWindow } 表（官方文档值），用于 modelUsage
+//                   注入兜底——未显式配 CONTEXT_WINDOW 时按 target 注入真实窗口
 //   adaptRequestBody(obj, ctx)  改写 Anthropic 请求体（上游专属适配），ctx = { target }。
 //                   思考字段（thinking / output_config.effort）不在此改写——/effort 档位
 //                   原样透传、由上游端点按官方映射解读（2026-08-22 T11 下线钉死）

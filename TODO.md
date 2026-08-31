@@ -2,9 +2,14 @@
 
 活跃待办（只放 `[ ]` 未完成条目；已处理条目移入 `TODO-archive.md`）。每条附记录时间戳（记录：YYYY-MM-DD HH:MM）。
 
+## 🔴 红色紧急度
+
+### 代码 / 机制
+
+- [ ] **T16** 发 2.15.1 并重装生产 glm 桥：修复（T15 的 SSE 事件破碎修复 + T14 的窗口注入）已完成并通过端到端验证，VERSION / package.json / CHANGELOG（2.15.1 定版条目）已就绪，但**生产 glm 桥仍在运行带 bug 的 2.15.0（2026-08-31 21:25 加载），每轮工具调用都会触发 "JSON Parse error: Unexpected EOF"**——须尽快走 `/commit` + `/release`（tag v2.15.1 + GitHub Release 挂 cc-bridge-2.15.1.tgz），再从 Release 重新全局安装并重启 glm daemon（运行版本与开发版本隔离规则，禁 npm link）。注意：/commit 前需把本次改动的 core/server.js、core/adapter.js、三个 <name>-bridge/adapter.js、VERSION、package.json、CHANGELOG.md、TODO.md 自行 `git add`（暂存区现存的 CHANGELOG/TODO 是修复前的旧版快照）（记录：2026-08-31 22:35）
+
 ## 🟠 橙色紧急度
 
 ### 上游 / 链路
 
-- [ ] **T12** 向智谱反馈网关 SSE 空闲超时问题并跟踪上游修复：断流模式已定位（2026-08-30 排查完结，见 CHANGELOG Unreleased「断流续写」条）——bigmodel.cn 网关对 SSE 连接有 ~15s 应用层空闲超时，三次实测断流「距上一包」恰为 15134/15104/15141ms，GLM 长思考 / 生成停顿静默超 15s 即被 RST，TCP keepalive 无效（网关看应用层字节；实测 GLM 只在流开头发一次 ping、思考静默期零字节）。桥接侧已用「断流续写」根治用户可见报错，但每次断流续写仍是额外的重复请求（多耗 token），上游根治（流内定期 ping，官方 Anthropic API 每秒发 ping 正是防此场景）才是正解。反馈渠道：智谱开放平台工单 / 用户群，附三次实测证据（记录：2026-08-30 20:55）
-- [ ] **T14** 把上下文窗口下沉到 adapter 按 target 注入（modelUsage 默认值兜底）：现状 `CONTEXT_WINDOW` 是全局单值（core/server.js「所有 target 共享」），不配则 modelUsage 不注入，CC 客户端只能按内置表猜窗口——实测坑（2026-08-30）：走桥接时 `ANTHROPIC_BASE_URL` 非 `api.anthropic.com`，CC 对 `claude-opus-4-8`（原生 1M，`native_1m:true`）降级按 200K 保底判断，长会话 20.98 万 token 在本地预检被拒「Prompt is too long」（请求未发出去，上游 GLM-5.3 真实 1M 完全装得下；手动 /compact 可过反证非上游限制）。改法：各 `<name>-bridge/adapter.js` 增加 `MODEL_CONTEXT_WINDOW` 表（按 target 模型，来源官方文档，仿现有 `MODEL_MAX_TOKENS` 的做法），`buildModelUsage()` 未显式配 `CONTEXT_WINDOW` 时按本次请求的 target 从 adapter 取真实窗口注入——多对 MODEL_MAP（如 glm-5.3=1M / glm-4.6=200K）也能各自正确。本次实测链路证据与 CC 侧判定函数链（`hf()` base URL 白名单 → `U1()` 不通过 → 窗口落回 `nye=200000`）已在 2026-08-30 QuantStrategistAgent 会话中查证（记录：2026-08-30 18:36）
+- [ ] **T12** 向智谱反馈网关 SSE 空闲超时问题并跟踪上游修复：断流模式已定位（2026-08-30 排查完结，见 CHANGELOG 2.15.0「断流续写」条）——bigmodel.cn 网关对 SSE 连接有 ~15s 应用层空闲超时，三次实测断流「距上一包」恰为 15134/15104/15141ms，GLM 长思考 / 生成停顿静默超 15s 即被 RST，TCP keepalive 无效（网关看应用层字节；实测 GLM 只在流开头发一次 ping、思考静默期零字节）。桥接侧已用「断流续写」根治用户可见报错，但每次断流续写仍是额外的重复请求（多耗 token），上游根治（流内定期 ping，官方 Anthropic API 每秒发 ping 正是防此场景）才是正解。**反馈文稿已起草（`tmp/zhipu-sse-feedback.md`，含三次实测证据、TCP keepalive 无效与官方 API 对照、两条建议——工单可直接粘贴），提交智谱开放平台工单 / 用户群待用户执行**（tmp/ 不入库，提交后本文稿内容已进工单即完成使命）。（记录：2026-08-30 20:55，更新：2026-08-31 22:35）

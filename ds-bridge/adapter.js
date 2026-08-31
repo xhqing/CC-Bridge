@@ -25,6 +25,16 @@ const MODEL_MAX_TOKENS = {
   'deepseek-v4-flash': 131072,
 };
 
+// DeepSeek 系列模型的上下文窗口（来自 DeepSeek 官方 pricing / models 文档，2026-08-31
+// 查证：V4 系列全系 1M，1M 为官方默认、无需额外参数）。用于 modelUsage 注入兜底：
+// 未显式配 CONTEXT_WINDOW 时按请求的 target 注入真实窗口，免得 CC 按内置表把
+// claude-opus-4-8 猜成 200K、长会话在本地预检被误拒。标称 M 按十进制换算（1000000），
+// 较 2^N 取值略保守：宁可 CC 早一点压缩，不让预检放行后被上游拒。
+const MODEL_CONTEXT_WINDOW = {
+  'deepseek-v4-pro': 1000000,
+  'deepseek-v4-flash': 1000000,
+};
+
 // 修复 Anthropic 消息序列中的 tool 校验问题（DeepSeek /anthropic 端点硬校验，实测
 // 会 400「tool_use ids were found without tool_result blocks immediately after」）：
 //   1) Claude Code 的 server tools（如 webReader，服务端执行）会把 server_tool_use 块
@@ -128,6 +138,7 @@ module.exports = {
   defaultTarget: 'deepseek-v4-pro',
   defaultSpoof: 'claude-opus-4-8',
   modelMaxTokens: MODEL_MAX_TOKENS,
+  modelContextWindow: MODEL_CONTEXT_WINDOW,
 
   // 改写 Anthropic 请求体（DeepSeek 专属适配）。ctx = { target }。
   // 透传原则（2026-08-22 T4）：除下述功能性改写外全部原样透传——思考字段、

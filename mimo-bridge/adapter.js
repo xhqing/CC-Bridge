@@ -17,12 +17,22 @@ const MODEL_MAX_TOKENS = {
   'mimo-v2.5': 131072,
 };
 
+// MiMo 系列模型的上下文窗口（来自小米 MiMo 官方文档模型页，2026-08-31 查证：
+// V2.5 与 V2.5-Pro 均 1M）。用于 modelUsage 注入兜底：未显式配 CONTEXT_WINDOW 时按
+// 请求的 target 注入真实窗口，免得 CC 按内置表猜窗口导致长会话本地预检误拒。
+// 标称 M 按十进制换算（1000000），较 2^N 取值略保守。
+const MODEL_CONTEXT_WINDOW = {
+  'mimo-v2.5-pro': 1000000,
+  'mimo-v2.5': 1000000,
+};
+
 module.exports = {
   name: 'mimo',
   displayName: 'MiMo (Xiaomi)',
   defaultTarget: 'mimo-v2.5-pro',
   defaultSpoof: 'claude-opus-4-8',
   modelMaxTokens: MODEL_MAX_TOKENS,
+  modelContextWindow: MODEL_CONTEXT_WINDOW,
 
   // 改写 Anthropic 请求体（MiMo 专属适配）。ctx = { target }。
   // 唯一改写项：钳 max_tokens 到目标模型上限（偶发超大值保护）。其余字段全部

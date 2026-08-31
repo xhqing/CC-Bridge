@@ -47,8 +47,9 @@ Claude Code 本身支持用纯配置指向自定义端点（`~/.claude/settings.
 - **安全分类器路由**（`glm`）——Claude Code auto 模式的安全分类器每轮工具调用前都
   发请求（约是主对话 3 倍）且按全额模型倍率计费；可改走免费模型或本地零成本放行
   （`CLASSIFIER_MODE`）。
-- **modelUsage 注入**——配 `CONTEXT_WINDOW` / `MAX_OUTPUT_TOKENS` 后，桥把真实上下文
-  窗口注入响应，客户端显示的窗口与真实模型一致、而不是 spoof 模型的窗口。
+- **modelUsage 注入**——桥把真实上下文窗口注入响应：默认取 adapter 按各 target
+  整理的官方文档值，可用 `CONTEXT_WINDOW` / `MAX_OUTPUT_TOKENS` 显式覆盖，客户端
+  显示的窗口与真实模型一致、而不是 spoof 模型的窗口。
 - **用量统计**（终端 + 本地 dashboard），跨重启持久化。
 
 ## 可用上游
@@ -69,7 +70,7 @@ Claude Code 本身支持用纯配置指向自定义端点（`~/.claude/settings.
 - **思考等级透传。** 桥不改写任何思考字段——`/effort` 档位原样转发，各上游按官方映射解读（GLM：xhigh/max → max；DeepSeek：max → max、xhigh → high；MiMo：任何思考档即开深度思考）。（见[思考等级透传](#思考等级透传)。）
 - **多 KEY 容灾。** 把多个 KEY 各自成行配成编号变量（`API_KEY_1=…`、`API_KEY_2=…`…，每行一个，方便单独注释账号来源、或整行注释掉禁用某 KEY；旧式逗号分隔 `API_KEY=k1,k2` 仍兼容）。某 KEY 返回 `401`/`403`（被拒 / 额度用尽）时，桥把它熔断 60 秒并立即切换下一个 KEY；瞬态错误（`429`/`5xx`/网络）先在同 KEY 重试、用尽再换。KEY 按 `API_KEY_n_PRIORITY` 优先级从高到低使用（不配则按编号顺序），主力 KEY 熔断才落备用、到期自动回切。URL 始终不变，只轮换 KEY。（见[多 KEY 容灾](#多-key-容灾)。）
 - **按上游隔离。** 每个上游有独立配置（`~/.cc-bridge/<upstream>.env`）、pid 文件、日志文件，多个上游可作为 daemon 并存（用不同 `PROXY_PORT`）。
-- **modelUsage 注入（真实上下文窗口）。** 在上游配置里设 `CONTEXT_WINDOW` / `MAX_OUTPUT_TOKENS` 后，桥给每条响应注入 `modelUsage`（spoof ID 与 target 双 key 命中），客户端显示的上下文窗口与真实模型一致——不注入的话，客户端会显示 spoof 模型的窗口。
+- **modelUsage 注入（真实上下文窗口）。** 桥给每条响应注入 `modelUsage`（spoof ID 与 target 双 key 命中），客户端显示的上下文窗口与真实模型一致——不注入的话，客户端会显示 spoof 模型的窗口。窗口值来自各 adapter 按官方文档整理的 target 模型表（如 glm-5.3 = 1M、glm-4.6 = 200K），多对 `MODEL_MAP` 下各映射对各注入各的窗口；在上游配置里显式设 `CONTEXT_WINDOW` / `MAX_OUTPUT_TOKENS` 则覆盖表值。
 - **用量统计：终端文本 + 本地 dashboard。** `cc-bridge stats` 在终端打印按 KEY 名与按模型两张聚合表（跨上游合并），并提示更详细的查看入口。`cc-bridge dashboard` 在本地起浏览器面板（仅绑 127.0.0.1、带一次性 token）：可选起止时间或快捷窗口（今天 / 近 7 天 / 近 30 天 / 全部），呈现最详细的用量统计——概览卡（请求数 / 输入 / 缓存命中 / 命中率 / 缓存创建 / 输出）、按上游的小时趋势图（请求数 / 输入 / 输出可切换，超过 48 个桶自动按天归并）、按上游 / 按 KEY 名 / 按模型三张明细表。用量按小时分桶持久化在 `~/.cc-bridge/stats-<upstream>.json`（滚动保留 30 天，daemon 重启不清零），daemon 停着也能查。dashboard 按模块化结构搭建，用量统计是第一个模块，后续功能会以并列模块加入。
 - **零运行时依赖。** 仅用 Node ≥ 14 内置模块。
 

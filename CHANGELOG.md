@@ -2,6 +2,32 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+## [2.15.1] - 2026-08-31
+
+### 修复（T15：tool_use 缓冲转发的 SSE 事件破碎——CC 侧 "JSON Parse error: Unexpected EOF" 根治）
+
+- **为什么改**：2026-08-31 晚用户报 CC 侧 `API Error: JSON Parse error: Unexpected EOF`，排查确认是 v2.15.0「tool_use 块缓冲完整再转发」引入的协议级 bug，本地端到端复现实锤（假上游 → 桥 → 按 W3C 规范逐事件分组的严格 SSE 解析器：7 个事件合法、1 个解析失败）。根因：转发循环里 `event:` 行与空行实时透传，tool_use 的 `data:` 行被扣到 `content_block_stop` 才一次性补发——CC 收到「无 data 的悬空事件 ×N + 多行 data 拼接成一个事件」，按 SSE 规范多行 data 以换行拼接为单事件 data 字段，`JSON.parse('{start}\n{delta1}\n…\n{stop}')` 必然失败。触发条件 = 模型在流式响应中发起工具调用（CC agent 会话常态），生产 glm 桥 2026-08-31 21:25 加载 2.15.0 后即中招；桥日志全程 200 无异常（字节全转发、破碎在事件分组层面，桥不感知），2.15.0 发版前实测没抓住也是因为只验证了字节完整性（内容 / 编号 / 块序）而非按 SSE 事件分组解析。
+- **改了什么**（全在 `core/server.js`）：
+  - **主转发循环攒整个事件**：新增 `pendingEventLine` 暂存机制——`event:` 行不再实时写出，推迟到同一事件的 `data:` 行 / 空行到达时再按序写出；tool_use 识别（content_block_start 的 data 行）后 event 行连同 data 行、事件间空行一起扣进 `toolBuffer`，`content_block_stop` 事件收全后按上游原始顺序一次性放行。非 tool_use 路径各字节仍按原顺序写出，与实时透传逐字节一致（仅写入时机推迟到事件边界）。prefill 素材提取改为只取缓冲中的 `data:` 行（缓冲里混有 event 行与空行）。
+  - **续写流 `attachContinuationStream` 同步修**：tool_use 整块转发（start / 各 delta / stop）与首个 text 块去重转发的事件输出，每事件补上结尾空行——2.15.0 里这两处同样缺事件间空行分隔（断流续写触发时同样会炸）。
+- **实测验证**：① `tmp/repro-toolbuf.js`（2.15.0 复现脚本）：修复后 11 个事件全部合法、0 解析失败，与上游原始流逐事件一致；② 新增 `tmp/test-continuation-sse.js` 断流续写端到端（假上游正文 200 字符处 destroy 模拟网关 RST → 桥 prefill 续写 → 严格解析器验证）：15 个事件全部合法、tool_use 整块转发 / 续写正文（去重后）到达 / thinking 剥壳全部通过；③ 日志确认续写链路完整（续写 #1/3 → 续写流接入 → 完成，prefill 素材含 text 与 tool_use 两块）。
+
+### 变更（T14：上下文窗口下沉 adapter 按 target 注入，modelUsage 默认值兜底）
+
+- **为什么改**：`CONTEXT_WINDOW` 此前是全局单值（不配则 modelUsage 不注入），CC 客户端只能按内置表猜窗口——走桥接时 `ANTHROPIC_BASE_URL` 非 `api.anthropic.com`，CC 对 `claude-opus-4-8`（原生 1M）降级按 200K 保底判断，2026-08-30 实测长会话 20.98 万 token 在 CC 本地预检被拒「Prompt is too long」（请求未发出去，上游 GLM-5.3 真实 1M 完全装得下；手动 /compact 可过反证非上游限制）。且全局单值无法适配多 MODEL_MAP 下不同窗口（glm-5.3=1M / glm-4.6=200K）。
+- **改了什么**：
+  - **各 adapter 新增 `modelContextWindow` 表**（官方文档值，2026-08-31 查证）：`glm-bridge`（5.3 / 5.3-Flash / 5.2 = 1M；5.1 / 5 / 5-Turbo / 5V-Turbo / 4.7 / 4.6 = 200K；4.5 系五款 = 128K，来源 docs.bigmodel.cn 各模型页）、`ds-bridge`（V4 pro / flash = 1M，来源官方 pricing 页）、`mimo-bridge`（V2.5 / V2.5-Pro = 1M，来源小米 MiMo 官方文档）。标称 K/M 按十进制换算（1M=1000000），较 2^N 取值略保守——宁可 CC 早一点压缩，不让预检放行后被上游拒。表里没有的 target 不注入窗口（回退 CC 内置表，行为同旧版）。
+  - **`core/server.js` `buildModelUsage()` 按 target 取窗口**：优先级 = 显式配置 `CONTEXT_WINDOW`（全局，向后兼容）> adapter 表按 target；每对映射各自 entry，spoof 名挂其映射对的 entry（多对时 CLI 取 spoof 或 target 名都命中对的窗口）。pairs 的 `contextWindow` 字段同步回退 adapter 表。`core/adapter.js` 接口注释补 `modelContextWindow` 字段说明。主 README 中英的 modelUsage injection 表述同步更新（原表述「配 CONTEXT_WINDOW 后注入」→ 现为「默认按 adapter 官方文档表注入、显式配置覆盖」）。
+- **实测验证**：`tmp/test-modelusage.js` 多对 MODEL_MAP（claude-opus-4-8→glm-5.3 / claude-haiku-4-5→glm-4.6）端到端——message_delta 注入的 modelUsage 为 `{"glm-5.3":{"contextWindow":1000000},"claude-opus-4-8":{…1M},"glm-4.6":{"contextWindow":200000},"claude-haiku-4-5":{…200K}}`，各 target 各自正确；显式配 `CONTEXT_WINDOW=123456` 时全部 entry 覆盖为 123456（优先级生效，向后兼容）；tool_use 流在 modelUsage 注入开启下回归（11 事件全绿）。
+- **遗留**：T12（向智谱反馈网关 15s SSE 空闲超时）反馈文稿已起草（`tmp/zhipu-sse-feedback.md`，含三次实测证据 15134/15104/15141ms），提交工单 / 用户群待用户执行。
+
+### 新增（AGENTS.md 软链接指向 .claude/CLAUDE.md）
+
+- **为什么改**：ZCode 等新一代 agent 工具的项目级指南约定入口是项目根 `AGENTS.md`（ZCode 不自动加载 `.claude/CLAUDE.md`），而 CC-Bridge 的项目指南一直只放在 `.claude/CLAUDE.md`——用 ZCode 会话操作本项目时读不到项目规则。与其维护两份内容（必然分叉），不如软链接共享单一权威源。
+- **改了什么**：项目根新建符号链接 `AGENTS.md` → `.claude/CLAUDE.md`（相对路径链接，仓库 clone 到任意位置均有效；git 会以符号链接形式跟踪）。
+
 ## [2.15.0] - 2026-08-31
 
 ### 变更（断流续写：正文期断流不再向 CC 报错，prefill 续写从断点无感恢复）

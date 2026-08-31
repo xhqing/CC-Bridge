@@ -307,7 +307,7 @@ function startServer(cfg, adapter) {
   const pairs = resolvePairs(cfg, adapter).map((p) => ({
     spoof: p.spoof,
     target: p.target,
-    contextWindow: cfg.CONTEXT_WINDOW,
+    contextWindow: cfg.CONTEXT_WINDOW || (adapter.modelContextWindow || {})[p.target] || 0,
     maxOutputTokens: cfg.MAX_OUTPUT_TOKENS,
   }));
   // 注入 apiBase（首个端点）供 adapter.makeUpstreamCall 派生 OpenAI 端点地址用。
@@ -325,27 +325,35 @@ function startServer(cfg, adapter) {
   const log = (...a) => { if (VERBOSE) console.log(`[bridge ${new Date().toISOString()}]`, ...a); };
 
   // --- modelUsage 注入 ----------------------------------------------------
-  // 如果配置了 contextWindow / maxOutputTokens，构建 modelUsage 对象注入 API 响应，
-  // 让 CLI 传递真实的上下文窗口给 webview。用所有出现过的 spoof 和 target 名作为 key
-  // 注入同一个 entry——CLI 的 currentMainLoopModel 可能取响应里的 model（target 名），
-  // 也可能取它自己记录的请求 model（spoof 名），多对时取到哪个名都命中。
-  // 注：contextWindow / maxOutputTokens 当前为全局值，所有 target 共享；若将来需要按
-  // target 区分窗口，需把它们下沉到每对。
+  // 构建 modelUsage 对象注入 API 响应，让 CLI 把真实的上下文窗口传给 webview / 本地
+  // 预检。contextWindow 优先级：显式配置 CONTEXT_WINDOW（全局，向后兼容）> adapter
+  // 的 modelContextWindow 表按 target 取值（T14：多对 MODEL_MAP 下各 target 各自
+  // 正确，如 glm-5.3=1M / glm-4.6=200K；表里没有的 target 不注入窗口）。maxOutputTokens
+  // 仍为全局显式配置。用所有出现过的 spoof 和 target 名作为 key 注入——CLI 的
+  // currentMainLoopModel 可能取响应里的 model（target 名），也可能取它自己记录的请求
+  // model（spoof 名），多对时取到哪个名都命中（spoof 名挂其映射对的 entry）。
   function buildModelUsage() {
-    const cw = cfg.CONTEXT_WINDOW;
+    const acw = adapter.modelContextWindow || {};
     const mo = cfg.MAX_OUTPUT_TOKENS;
-    if (!cw && !mo) return null;
-    const entry = {};
-    if (cw) entry.contextWindow = cw;
-    if (mo) entry.maxOutputTokens = mo;
-    const mu = {};
-    const names = new Set();
+    const entryByTarget = new Map();
     for (const p of pairs) {
-      if (p.target) names.add(p.target);
-      if (p.spoof) names.add(p.spoof);
+      if (!p.target) continue;
+      const cw = cfg.CONTEXT_WINDOW || acw[p.target] || 0;
+      if (!cw && !mo) continue;
+      const entry = {};
+      if (cw) entry.contextWindow = cw;
+      if (mo) entry.maxOutputTokens = mo;
+      entryByTarget.set(p.target, entry);
     }
-    for (const n of names) mu[n] = entry;
-    return mu;
+    if (!entryByTarget.size) return null;
+    const mu = {};
+    for (const p of pairs) {
+      const e = entryByTarget.get(p.target);
+      if (!e) continue;
+      mu[p.target] = e;
+      if (p.spoof) mu[p.spoof] = e;
+    }
+    return Object.keys(mu).length ? mu : null;
   }
 
   // Headers we must NOT blindly copy from the client request:
@@ -761,12 +769,14 @@ function startServer(cfg, adapter) {
             if (ev2.includes('content_block_stop')) {
               if (toolBuf2 && data.index === toolBuf2.index) {
                 // 续写流 tool_use 收全：递增编号整块转发（start + deltas + stop）。
+                // 每个事件都以空行收口——SSE 事件以空行分隔，缺了会把多行 data 拼
+                // 成单事件、JSON.parse 失败（同主转发循环 2.15.0 的 bug，一并修）。
                 const baseIdx = sseStateRef ? sseStateRef.nextBlockIndex++ : data.index;
                 clientRes.write('event: content_block_start\n');
-                clientRes.write('data: ' + JSON.stringify({ ...toolBuf2.lines[0], index: baseIdx }) + '\n');
+                clientRes.write('data: ' + JSON.stringify({ ...toolBuf2.lines[0], index: baseIdx }) + '\n\n');
                 for (const dl of toolBuf2.lines.slice(1)) {
                   clientRes.write('event: content_block_delta\n');
-                  clientRes.write('data: ' + JSON.stringify({ ...dl, index: baseIdx }) + '\n');
+                  clientRes.write('data: ' + JSON.stringify({ ...dl, index: baseIdx }) + '\n\n');
                 }
                 clientRes.write('event: content_block_stop\n');
                 clientRes.write('data: ' + JSON.stringify({ type: 'content_block_stop', index: baseIdx }) + '\n\n');
@@ -802,10 +812,11 @@ function startServer(cfg, adapter) {
                 firstTextBuf = null;
                 if (deduped) {
                   const idx = sseStateRef ? sseStateRef.nextBlockIndex++ : 0;
+                  // 每个事件以空行收口（同上，SSE 事件分隔，缺了会拼接多行 data）。
                   clientRes.write('event: content_block_start\n');
-                  clientRes.write('data: ' + JSON.stringify({ type: 'content_block_start', index: idx, content_block: { type: 'text', text: '' } }) + '\n');
+                  clientRes.write('data: ' + JSON.stringify({ type: 'content_block_start', index: idx, content_block: { type: 'text', text: '' } }) + '\n\n');
                   clientRes.write('event: content_block_delta\n');
-                  clientRes.write('data: ' + JSON.stringify({ type: 'content_block_delta', index: idx, delta: { type: 'text_delta', text: deduped } }) + '\n');
+                  clientRes.write('data: ' + JSON.stringify({ type: 'content_block_delta', index: idx, delta: { type: 'text_delta', text: deduped } }) + '\n\n');
                   clientRes.write('event: content_block_stop\n');
                   clientRes.write('data: ' + JSON.stringify({ type: 'content_block_stop', index: idx }) + '\n\n');
                   continuation.blocks.push({ type: 'text', text: deduped });
@@ -1019,17 +1030,17 @@ function startServer(cfg, adapter) {
           //   nextBlockIndex —— 下一个要分配的 content_block 编号（原流从上游来，
           //     续写流由桥接继续递增分配）。
           //   partialText —— 正在转发的 text 块累计文本（断流时拼进 prefill）。
-          //   toolBuffer —— tool_use 块缓冲：input 的 partial_json 一条条攒着，
-          //     content_block_stop（input JSON 收全）后才一次性转发给 CC。半截
-          //     tool JSON 落到 CC 无意义（它要等完整 JSON 才能执行），且断流时
-          //     半截块既拼不进 prefill 也撤不回——缓冲完整再发，断流损失为零。
+          //   toolBuffer —— tool_use 块缓冲：整个事件（event 行 + data 行 + 事件
+          //     间空行）逐行攒着，content_block_stop 事件收全后按上游原始顺序一次性
+          //     转发给 CC。半截 tool JSON 落到 CC 无意义（它要等完整 JSON 才能执行），
+          //     且断流时半截块既拼不进 prefill 也撤不回——缓冲完整再发，断流损失为零。
           //   seenBodyBlock —— 是否已转发过正文块（text / tool_use），决定断流时
           //     走续写（true）还是让 CC 自动重试（false）。
           //   forwarded —— 已写给 CC 的正文文本累计（prefill 依据，含 partialText）。
           const sseState = {
             nextBlockIndex: 0,
             partialText: '',
-            toolBuffer: null, // { index, header data 行, partial_json 行数组 }
+            toolBuffer: null, // { index, lines } —— 整事件的原始行（event/data/空行）
             seenBodyBlock: false,
             // 本流已被放弃（断流续写接管 / SSE error 收尾后）：转发循环停止写、
             // 销毁上游流。防 write-after-end（2026-08-30 断流续写实测抓到）。
@@ -1038,6 +1049,17 @@ function startServer(cfg, adapter) {
           sseStateRef = sseState; // 回填请求级引用，供续写流接入读块编号 / partialText
           let sseBuf = '';
           let pendingEvent = '';
+          // event: 行延迟写出：先暂存，等同一事件的 data: 行 / 空行到达再按序写出
+          //（或 tool_use 识别后连它一起扣进 toolBuffer）。原因：tool_use 要到
+          // content_block_start 的 data 行才能识别，若 event: 行已实时透传，CC 会
+          // 收到「无 data 的悬空 event 行」，缓冲的 data 行补发时又缺事件间空行
+          // 分隔——按 SSE 规范多行 data 以换行拼成单事件，JSON.parse 必然失败
+          //（2.15.0 "JSON Parse error" 根因，2.15.1 修复）。非 tool_use 路径各字
+          // 节仍按原顺序写出，与实时透传逐字节一致，只是写入时机推迟到事件边界。
+          let pendingEventLine = null;
+          const flushEventLine = () => {
+            if (pendingEventLine !== null) { clientRes.write(pendingEventLine + '\n'); pendingEventLine = null; }
+          };
           // TextDecoder stream 模式处理跨 chunk 的 UTF-8 多字节字符（中文 3 字节/字），
           // 避免 chunk 边界切断中文字符产生 U+FFFD 乱码（单 chunk toString 会丢字节）。
           const decoder = new TextDecoder('utf-8');
@@ -1087,7 +1109,13 @@ function startServer(cfg, adapter) {
                 if (pendingEvent.includes('content_block_start')) {
                   const data = JSON.parse(line.slice(5).trim());
                   if (data.content_block && data.content_block.type === 'tool_use') {
-                    sseState.toolBuffer = { index: data.index, lines: ['data: ' + JSON.stringify(data)] };
+                    // 从 event 行起攒整个事件（event 行 + data 行），后续 delta 事件
+                    // 与事件间空行一并入缓冲（见 pendingEventLine 声明处说明）。
+                    sseState.toolBuffer = {
+                      index: data.index,
+                      lines: [pendingEventLine, 'data: ' + JSON.stringify(data)].filter((l) => l !== null),
+                    };
+                    pendingEventLine = null;
                     sseState.nextBlockIndex = Math.max(sseState.nextBlockIndex, data.index + 1);
                     sseState.seenBodyBlock = true;
                     continue; // 不转发，等收全
@@ -1100,8 +1128,10 @@ function startServer(cfg, adapter) {
                 } else if (pendingEvent.includes('content_block_delta')) {
                   const data = JSON.parse(line.slice(5).trim());
                   if (sseState.toolBuffer && data.index === sseState.toolBuffer.index) {
+                    if (pendingEventLine !== null) sseState.toolBuffer.lines.push(pendingEventLine);
+                    pendingEventLine = null;
                     sseState.toolBuffer.lines.push('data: ' + JSON.stringify(data));
-                    continue; // tool_use 的 delta 攒着
+                    continue; // tool_use 的 delta 攒着（event 行一并入缓冲）
                   }
                   if (data.delta && typeof data.delta.text === 'string') {
                     sseState.partialText += data.delta.text;
@@ -1109,18 +1139,22 @@ function startServer(cfg, adapter) {
                 } else if (pendingEvent.includes('content_block_stop')) {
                   const data = JSON.parse(line.slice(5).trim());
                   if (sseState.toolBuffer && data.index === sseState.toolBuffer.index) {
-                    // tool_use 收全：一次性转发缓冲的 start + deltas + 本条 stop。
+                    // tool_use 收全：按上游原始顺序一次性转发缓冲的全部行（各事件的
+                    // event 行 + data 行 + 空行都在），再补本条 stop 事件的 event 行与
+                    // data 行；stop 事件结尾的空行随后到达时走正常路径，事件完整。
                     for (const buffered of sseState.toolBuffer.lines) {
                       clientRes.write(buffered + '\n');
                     }
                     // 完整 tool_use 块记入续写 prefill 素材（input 已在 start+deltas 里）。
                     try {
-                      const start = JSON.parse(sseState.toolBuffer.lines[0].slice(5).trim());
+                      // 缓冲里混有 event 行与空行，只取 data 行解析。
+                      const dataLines = sseState.toolBuffer.lines.filter((l) => l.startsWith('data:'));
+                      const start = JSON.parse(dataLines[0].slice(5).trim());
                       // partial_json 拼接成完整 input：GLM 实测整段 JSON 放单条
                       // partial_json，但规范允许多条分片——先把所有分片按序拼成
                       // 一个字符串再 parse，天然覆盖两种形态。
                       let json = '';
-                      for (const l of sseState.toolBuffer.lines.slice(1)) {
+                      for (const l of dataLines.slice(1)) {
                         const d = JSON.parse(l.slice(5).trim());
                         if (d.delta && typeof d.delta.partial_json === 'string') json += d.delta.partial_json;
                       }
@@ -1133,6 +1167,7 @@ function startServer(cfg, adapter) {
                         input,
                       });
                     } catch { /* prefill 素材尽力积累，失败不影响转发 */ }
+                    flushEventLine(); // 写出 stop 事件自己的 event: 行
                     clientRes.write(line + '\n');
                     pendingEvent = '';
                     sseState.toolBuffer = null;
@@ -1146,8 +1181,11 @@ function startServer(cfg, adapter) {
                 }
               } catch { /* 块跟踪解析失败不影响原样转发 */ }
               if (line.startsWith('event:')) {
+                // 不立即写出：暂存到事件边界再发（见 pendingEventLine 声明处说明）。
+                // 防御：连续两条 event 行（无 data 的事件紧挨着）时按序补发前一条，防丢。
+                if (pendingEventLine !== null) clientRes.write(pendingEventLine + '\n');
                 pendingEvent = line;
-                clientRes.write(line + '\n');
+                pendingEventLine = line;
               } else if (line.startsWith('data:') && pendingEvent.includes('message_delta')) {
                 // message_delta 的 usage 是输出侧统计（output_tokens，部分上游还带
                 // cache_creation_input_tokens）：Anthropic 规范里 message_start 的
@@ -1177,6 +1215,7 @@ function startServer(cfg, adapter) {
                     out = 'data: ' + JSON.stringify(data);
                   }
                 } catch { /* parse 失败原样转发 */ }
+                flushEventLine();
                 clientRes.write(out + '\n');
                 pendingEvent = '';
               } else if (line.startsWith('data:') && pendingEvent.includes('message_start')) {
@@ -1199,11 +1238,23 @@ function startServer(cfg, adapter) {
                   const cu = formatCacheUsage(u);
                   if (cu) log('  ' + cu);
                 } catch {}
+                flushEventLine();
                 clientRes.write(line + '\n');
                 pendingEvent = '';
+              } else if (line.trim() === '') {
+                // 事件边界空行：tool_use 缓冲进行中则空行随事件入缓冲（保持缓冲内
+                // 事件完整）；否则按序补发暂存的 event 行后转发空行，事件收口。
+                if (sseState.toolBuffer) {
+                  if (pendingEventLine !== null) { sseState.toolBuffer.lines.push(pendingEventLine); pendingEventLine = null; }
+                  sseState.toolBuffer.lines.push('');
+                } else {
+                  flushEventLine();
+                  clientRes.write(line + '\n');
+                }
+                pendingEvent = '';
               } else {
+                flushEventLine();
                 clientRes.write(line + '\n');
-                if (line.trim() === '') pendingEvent = '';
               }
             }
             armIdleWatchdog();
