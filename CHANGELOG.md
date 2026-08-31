@@ -2,6 +2,26 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 变更（断流续写：正文期断流不再向 CC 报错，prefill 续写从断点无感恢复）
+
+- **为什么改**：2026-08-30 用户再报 "API Error: Server error mid-response"，本轮全链路排查定位两个事实：① 上游网关（bigmodel.cn）对 SSE 连接有 ~15s **应用层**空闲超时——三次实测断流「距上一包」恰为 15134/15104/15141ms，GLM 长思考 / 生成中途停顿静默超 15s 即被 RST，TCP keepalive(15s) 挡不住（网关看应用层字节，不看探测包；实测 GLM 只在流开头发一次 ping，思考静默期零字节）；② 反编译 CC 2.1.226 确认其中途错误重试的判定——**已产出正文块（text/tool_use）后收到流内 error 事件，一律 finalize partial response**（合成 end_turn + 把报错文本 yield 给用户、本轮不重试），只有「无正文产出」的 thinking-only 断流才自动重试。v2.14.0 的 SSE error 收尾因此只救得了思考期断流（当日 26 次断流中 18 次无感恢复），正文期断流（8 次）用户照样看到报错——已转发的半截正文不可撤回、CC 又不重试，报错不可避免。
+- **改了什么**（全在 `core/server.js`）：
+  - **断流续写主路径 `continueInterrupted()`**：正文期断流后不再向 CC 发 error，改为把「已转发给 CC 的正文」（完整块 + 正在写的半截 text）作为 assistant prefill 追加进原对话重发上游（GLM 端点实测支持：字符串 / 块数组 prefill、thinking 开启、句中断点三种场景均精准续写；末条已是 assistant 的原请求（结构化输出 prefill 场景）则并块避免相邻双 assistant 400），续写流的正文以递增 content_block 编号续在原消息后转发，message_delta/message_stop 正常收尾——CC 收到一条协议完整的消息，全程无感。
+  - **续写流剥壳 `attachContinuationStream()`**：丢弃续写流的 message_start/ping/thinking 块（原消息框架已在 CC 侧、重复思考无价值）；首个 text 块整块缓冲后经 `stripRepeatedPrefix()` 去重（GLM 偶发把 prefill 尾部乃至整段重复输出在续写开头，实测约半数场景随机出现；算法取 4KB 窗口做行对齐最长前缀匹配剥除，单字符巧合不剥）再以新编号整块转发，后续 text 块恢复逐 delta 实时转发；tool_use 块同原流缓冲完整后转发并记入 prefill 素材（支持再断再续）；续写流自身再断时在上限内递归再续。
+  - **上游静默看门狗**：正文期断流全是「静默 15s → 网关 RST」模式，桥接改为 12s 静默主动判定断流并立即续写（抢在网关 RST 前，省 3s 且日志可控）；只在正文已开始转发后武装——思考期断流维持 SSE error 收尾，CC 的 thinking-only 自动重试是已验证的好路径，不剥夺。
+  - **CC 方向 5s SSE 注释行保活**（`: keepalive\n\n`）：续写重连 / 首 text 块缓冲期间 CC 收不到正文字节，注释行喂住其字节看门狗（默认 3 分钟）；正文恢复真实流动后自动停。
+  - **tool_use 块缓冲完整再转发**：半截 tool input JSON 对 CC 无用（它要等完整 JSON 才能执行），改为 content_block_stop 收全后一次性转发——断流发生在 tool 生成中途时该块留在缓冲，CC 零损失。
+  - **修复与防御**：`buildHeaders` 支持按实际发送体计算 content-length（续写体比原请求体长，不覆盖则上游按原长度截断报 422 json_invalid——端到端实测抓到）；SSE 转发循环加 `sseState.abandoned` 标志（续写接管 / error 收尾后停止写原流，防 ERR_STREAM_WRITE_AFTER_END——实测抓到）；续写次数上限 3 次，耗尽降级 SSE error 收尾（回到 CC 自动重试路径）。
+- **实测验证**：① prefill 续写三场景（字符串 / 块数组 / thinking 开启）精准接续；② 去重算法单测 7/7；③ 正常流量回归（普通流式、tool_use 强制调用）块结构 / 编号 / 转发无回归；④ **模拟断流端到端**（测试钩子在正文 200 字符处主动 destroy 上游流）：日志全链路 `TESTHOOK → 断流续写 #1/3 → ←200 续写流接入 → 断流续写完成`，客户端收到 `[thinking, text(断前半截), text(续写)]` 三块、编号 0/1/2 连续、654 字符完整正文、正常 message_stop 收尾、零 error 事件。
+- **遗留**：向智谱反馈网关 15s SSE 空闲超时问题（官方 Anthropic API 每秒发 ping 正是防此场景）已在 TODO T12 跟踪。
+
+### 待办登记（T14：上下文窗口下沉 adapter 按 target 注入）
+
+- **为什么登记**：2026-08-30 排查 QuantStrategistAgent 长会话「Prompt is too long」（上下文 20.98 万 token 被 CC 客户端本地预检拒绝、请求未发出去）定位到框架层缺口：CC 对非官方 `ANTHROPIC_BASE_URL`（host 不在 `api.anthropic.com` 白名单）不认 `claude-opus-4-8` 的原生 1M 窗口（内置表 `native_1m:true` 仅对可验证渠道生效），降级按 200K 保底——而桥接的 modelUsage 注入（能把真实窗口告诉 CC）只在显式配 `CONTEXT_WINDOW` 时生效，全局默认 0 即不注入，且当前为全局单值、无法适配多 MODEL_MAP 下不同窗口（glm-5.3=1M / glm-4.6=200K）。上游 GLM-5.3 真实 1M 完全装得下 20.98 万（手动 /compact 同量级成功反证）。
+- **登记内容**：新增 T14（`TODO.md` 🟠 上游 / 链路节）——各 `<name>-bridge/adapter.js` 增加 `MODEL_CONTEXT_WINDOW` 表（仿 `MODEL_MAX_TOKENS` 做法、按 target 取官方文档值），`buildModelUsage()` 在未显式配 `CONTEXT_WINDOW` 时按本次请求 target 从 adapter 取真实窗口注入，实现按 target 的窗口默认值兜底。本次仅登记待办，未改代码。
+
 ## [2.14.1] - 2026-08-30
 
 ### 变更（glm-bridge MODEL_MAX_TOKENS 补 glm-5.3-flash 钳制条目）

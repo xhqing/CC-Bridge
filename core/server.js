@@ -51,6 +51,13 @@ function isKeyError(status) {
   return status === 401 || status === 403;
 }
 
+// --- 断流续写（continuation recovery）常量 -----------------------------------
+// 正文期断流后用 assistant prefill 让上游从断点续写（详见请求处理处的实现注释）。
+// 续写次数上限：防「续写流又断 → 再续 → 又断」长尾请求无限循环。GLM 网关 ~15s
+// 空闲即 RST（2026-08-30 实测），正常一次续写即可恢复；上限 3 次给长生成留余量，
+// 仍失败则降级 SSE error（CC 侧 finalize partial，与现状一致）。
+const CONTINUATION_MAX_RETRY = 3;
+
 // --- 会话标题提示词语言示例修正 ------------------------------------------------
 // Claude Code 客户端生成的会话标题提示词（内嵌于 native binary，2.1.226 实测）只有
 // 英语示例 + 一条「Good (Korean session)」韩语示例，没有中文示例。非英语会话（如
@@ -409,13 +416,12 @@ function startServer(cfg, adapter) {
       // 流式中断收尾：向已开始的 SSE 流补发一个协议内 error 事件后干净 end，
       // 而不是硬掐 TCP（clientRes.destroy()）。硬掐时 CC 只能显示 "Connection
       // closed mid-response" 并停止本轮；而 Anthropic 流式协议允许在任意时刻
-      // 送达 {"type":"error"} 事件，Claude Code ≥2.1.199 对流内 overloaded_error
-      // / 5xx 会自动重试整轮、任务不中断（官方错误文档明文）。两者对用户的差别：
-      // 硬掐 = 任务停、要人工点继续；发错误事件 = CC 退避重发、无感续跑。
-      // 实现注意：CC 对「已收到部分 delta 后的流内 error」同样会重试（v2.1.199
-      // 起 mid-stream retry 覆盖此场景），半截输出会被丢弃重生成，故无需也不应
-      // 尝试续接半截内容。非流式请求没有 SSE 通道，仍走 destroy（CC 按普通连接
-      // 错误处理）。
+      // 送达 {"type":"error"} 事件，CC 对「还没产出正文」的流内错误会自动重试
+      // 整轮。注意（2026-08-30 反编译 CC 2.1.226 确认）：已产出正文（text /
+      // tool_use 块）后收到流内错误，CC 一律 finalize partial response——把
+      // "API Error: Server error mid-response" 当文本 yield 给用户、本轮不重试。
+      // 所以本函数只是「思考期断流」的兜底（CC 会自动重试）；正文期断流走
+      // continueInterrupted（断流续写），不要落到这里。
       function abortWithSseError(reason) {
         if (clientRes.headersSent && !clientRes.writableEnded) {
           try {
@@ -434,6 +440,452 @@ function startServer(cfg, adapter) {
         } else {
           try { clientRes.destroy(); } catch { /* already gone */ }
         }
+      }
+
+      // --- 断流续写（continuation recovery）状态 ---------------------------------
+      // 病灶（2026-08-30 实测定位）：bigmodel.cn 网关对 SSE 连接有 ~15s 应用层空闲
+      // 超时——流上 15s 无字节即 RST（三次实测距上一包 15134/15104/15141ms，TCP
+      // keepalive 挡不住，网关看的是应用层字节）。GLM-5.3 思考期 / 生成中途停顿
+      // 静默超 15s → 连接被掐。断在思考期（无正文）时 CC 自动重试、用户无感；断在
+      // 正文期时 CC 收到 error 事件也绝不重试（见 abortWithSseError 注释），用户
+      // 看到 "API Error: Server error mid-response"。
+      //
+      // 治法：正文期断流后不向 CC 报错，而是让上游「从断点接着写」——把已转发的
+      // 正文作为 assistant prefill 重发请求（GLM 端点支持，2026-08-30 实测：字符串
+      // / 块数组 prefill、thinking 开启、句中断点三种场景都能精准续写；偶发把整个
+      // prefill 重复输出，约 50%/场景随机，用后缀匹配去重兜住），续写流的正文块以
+      // 递增编号续在原消息后面转发。CC 收到的是一条协议完整的消息（块 0 思考、
+      // 块 1 半截正文、块 2 续写正文……），全程无 error 事件、无感。
+      // 前提：本请求可解析（obj 非空）、流式、且原始请求体可用（续写要重发对话）。
+      const continuation = {
+        // 已转发给 CC 的正文块快照：[{type:'text',text},...]。断流时拼成 prefill。
+        // thinking 块不进 prefill（续写流自带新思考）；tool_use 块进 prefill 时
+        // 半截 JSON 无法续（见下 toolBuffer 说明），只进完整的。
+        blocks: [],
+        // 续写次数（上限 CONTINUATION_MAX_RETRY，防长尾请求无限续）。
+        attempt: 0,
+        // 续写恢复中标记：置真期间上游静默属预期（重连 + 重新思考），CC 方向靠
+        // keepaliveTimer 的 SSE 注释行喂字节看门狗。
+        recovering: false,
+      };
+      // SSE 块状态引用：handleUpstreamResponse 的流式分支创建 sseState 后回填到
+      // 这里，供 attachContinuationStream（块编号续接、partialText 拼 prefill）读取。
+      // 请求初期为 null（还没收到上游响应）。
+      let sseStateRef = null;
+      // 上游流静默看门狗：正文期断流全部是「静默 15s → RST」模式，与其等网关掐，
+      // 不如桥接在 12s 静默时主动判定断流、立即走续写——省 3s 等待，且把「被动
+      // RST」变「主动恢复」，日志可控。仅正文已开始转发后启用（思考期断流交给
+      // CC 自动重试，那是已验证的好路径）。
+      let idleWatchdog = null;
+      const UP_IDLE_TIMEOUT_MS = 12000;
+      // CC 方向保活：续写重连期间 CC 收不到正文字节，其字节看门狗（默认 3 分钟）
+      // 若触发会整轮报废。每 5s 发一条 SSE 注释行（": keepalive"，协议规定客户端
+      // 忽略注释，但字节确实在流动）。仅在需要时启动（续写恢复期 / 静默期）。
+      let keepaliveTimer = null;
+      function startKeepalive() {
+        if (keepaliveTimer || clientRes.writableEnded || clientRes.destroyed) return;
+        keepaliveTimer = setInterval(() => {
+          if (clientRes.writableEnded || clientRes.destroyed) {
+            clearInterval(keepaliveTimer);
+            keepaliveTimer = null;
+            return;
+          }
+          try { clientRes.write(': keepalive\n\n'); } catch { /* client gone */ }
+        }, 5000);
+      }
+      function stopKeepalive() {
+        if (keepaliveTimer) { clearInterval(keepaliveTimer); keepaliveTimer = null; }
+      }
+
+      // prefill 续写去重：GLM 偶发把 prefill 的尾部（乃至整段）重复输出在续写正文
+      // 开头（实测约半数场景随机出现）。找最长的 s 满足 prefillTail.endsWith(s) &&
+      // contText.startsWith(s)，剥掉续写正文开头的 s。只做行对齐匹配（s 必须从
+      // prefillTail 的某个行首开始），避免误剥「正常续写恰好重复几个字符」的场景。
+      function stripRepeatedPrefix(prefillTail, contText) {
+        const window = prefillTail.slice(-4096); // 匹配窗口 4KB 足够（重复的是尾部）
+        const max = Math.min(window.length, contText.length);
+        // len >= 2：单字符「重复」多为巧合（如标点、换行），剥了弊大于利。
+        for (let len = max; len >= 2; len--) {
+          const start = window.length - len;
+          // 行对齐：候选 s 在 prefillTail 里的起点必须是行首（前一个字符是 \n
+          // 或就是窗口开头）。起点不在行首的部分重复不值得冒误剥风险。
+          if (start > 0 && window[start - 1] !== '\n') continue;
+          const s = window.slice(start);
+          if (contText.startsWith(s)) return contText.slice(len);
+        }
+        return contText;
+      }
+
+      // 断流续写主入口：上游流断了且正文已转发给 CC 时调用。构造 prefill 请求让
+      // 上游从断点接着写，续写流剥壳后（跳过 message_start / thinking / 已去重的
+      // 重复前缀）以递增块编号续转发。失败（重试用尽 / 请求构造不出）降级为
+      // abortWithSseError。
+      function continueInterrupted(reason) {
+        // 重入 guard：已在续写恢复中（静默看门狗 destroy 的回声 error / 续写流
+        // 自身的错误路径可能并发到达），只让第一个触发方驱动恢复。
+        if (continuation.recovering) return;
+        // 客户端已断 / 已收尾：无事可做。
+        if (clientRes.writableEnded || clientRes.destroyed) return;
+        // 无可续内容（正文块为空 = 断在思考期）或不可构造续写请求：CC 侧走
+        // thinking-only 自动重试路径。
+        // 可续内容 = 已收全的完整块 或 正在写的半截 text 块（都可作为 prefill）。
+        const hasPartialText = !!(sseStateRef && sseStateRef.partialText);
+        const canContinue = (continuation.blocks.length > 0 || hasPartialText) && obj && isMessages && stream;
+        if (!canContinue || continuation.attempt >= CONTINUATION_MAX_RETRY) {
+          if (continuation.attempt >= CONTINUATION_MAX_RETRY && canContinue) {
+            log(`  断流续写已达上限（${CONTINUATION_MAX_RETRY}），降级 SSE error 收尾`);
+          }
+          if (sseStateRef) sseStateRef.abandoned = true; // 原流停止写（防 write-after-end）
+          abortWithSseError(reason);
+          return;
+        }
+        continuation.attempt++;
+        continuation.recovering = true;
+        if (sseStateRef) sseStateRef.abandoned = true; // 原流停止写，续写流接管
+        startKeepalive();
+        log(`  断流续写 #${continuation.attempt}/${CONTINUATION_MAX_RETRY}：正文已转发 ${continuation.blocks.length} 块，prefill 重发请求恢复`);
+
+        // 构造续写请求体：原对话 + assistant prefill（已转发正文的块数组）。
+        // prefill 只放完整块——半截 text 块（断流时正在写的那个）拼成完整 text
+        // 块给 prefill（LLM 视角就是「我写到这里的完整发言」）；半截 tool_use
+        // 块（input JSON 没收全）不能拼进 prefill，该块的已转发部分只能截断——
+        // 用 content_block_stop 补一个闭合的空壳块收尾（见 finishTruncatedToolUse）。
+        try {
+          const contBody = JSON.parse(body.toString('utf-8')); // 从改写后的请求体复制（模型改写 / adapter 适配都保留）
+          const prefillBlocks = continuation.blocks.map((b) => ({ ...b }));
+          // 半截 text 块：断流时正在写的那个 text 块已累计的文本，拼进 prefill
+          // 末尾（prefill 块必须完整，半截 text 直接以文本形式拼上即可——LLM 视角
+          // 就是「我说到这里」）。
+          if (sseStateRef && sseStateRef.partialText) {
+            prefillBlocks.push({ type: 'text', text: sseStateRef.partialText });
+          }
+          // prefill 追加为末尾 assistant 消息：常规请求最后一条是 user / tool_result，
+          // 直接 push；CC 的结构化输出等场景原请求就带 assistant prefill（末条已是
+          // assistant），此时把断点块并进那条消息（两条 assistant 相邻会 400）。
+          const lastMsg = contBody.messages[contBody.messages.length - 1];
+          if (lastMsg && lastMsg.role === 'assistant') {
+            const existing = typeof lastMsg.content === 'string'
+              ? [{ type: 'text', text: lastMsg.content }]
+              : (Array.isArray(lastMsg.content) ? lastMsg.content : []);
+            lastMsg.content = existing.concat(prefillBlocks);
+          } else {
+            contBody.messages.push({ role: 'assistant', content: prefillBlocks });
+          }
+          // 续写轮不需要再思考一遍（首思考已在断流前转发了；续写直接出正文）。
+          // 但 GLM 端点 thinking 参数留着也无妨（实测带 thinking 续写精准），
+          // 删掉 budget 可省 token：保守起见保持原样，行为与实测一致。
+          const contBodyBuf = Buffer.from(JSON.stringify(contBody), 'utf-8');
+
+          // 走与 send() 相同的 KEY 选择 / 熔断逻辑，但响应处理换成续写壳。
+          const tryKeys = [];
+          for (let i = 0; i < KEYS.length; i++) if (!tried.has(i)) tryKeys.push(i);
+          if (!tryKeys.length) tryKeys.push(currentKey);
+          const attemptCont = (ki) => {
+            if (ki >= tryKeys.length) {
+              log('  断流续写：所有 KEY 失败，降级 SSE error 收尾');
+              continuation.recovering = false;
+              stopKeepalive();
+              abortWithSseError(reason + ' (continuation failed)');
+              return;
+            }
+            const keyIdx2 = tryKeys[ki];
+            const keyUp = keyUpstreams[keyIdx2];
+            const transport2 = transportFor(keyUp);
+            const upReq = transport2.request({
+              hostname: keyUp.hostname,
+              port: keyUp.port || (keyUp.protocol === 'http:' ? 80 : 443),
+              path: keyUp.pathname.replace(/\/+$/, '') + clientReq.url,
+              method: clientReq.method,
+              headers: buildHeaders(KEYS[keyIdx2].value, keyUp, contBodyBuf),
+            });
+            upReq.setSocketKeepAlive(true, 15000);
+            upReq.on('response', (res2) => {
+              if (res2.statusCode !== 200) {
+                // 读错误响应体帮助定位（422 语义错误等），读完再换 KEY。
+                let errBody = '';
+                res2.on('data', (c) => { errBody += c; });
+                res2.on('end', () => {
+                  log(`  断流续写：上游 ${res2.statusCode}（${errBody.slice(0, 300)}），换 KEY 重试`);
+                  attemptCont(ki + 1);
+                });
+                return;
+              }
+              log(`  断流续写：← 200（key=${KEYS[keyIdx2].name}），续写流接入`);
+              continuation.recovering = false;
+              // keepalive 不在这里停：续写流剥壳后（丢弃 thinking / message_start），
+              // 首 text 块还要整块缓冲去重，CC 方向可能持续无正文字节；keepalive
+              // 由 attachContinuationStream 在真正开始转发正文后自行停掉。
+              attachContinuationStream(res2, keyIdx2);
+            });
+            upReq.on('error', (err2) => {
+              log(`  断流续写：请求错误 ${err2.message}，换 KEY 重试`);
+              attemptCont(ki + 1);
+            });
+            upReq.end(contBodyBuf);
+          };
+          attemptCont(0);
+        } catch (e) {
+          log(`  断流续写：构造请求失败（${e.message}），降级 SSE error 收尾`);
+          continuation.recovering = false;
+          stopKeepalive();
+          abortWithSseError(reason + ' (continuation build failed)');
+        }
+      }
+
+      // 续写流接入：把 prefill 续写请求的响应流接成原消息的后续块。
+      // 剥壳规则（CC 侧原消息已在转发中，续写流的协议框架不能重复出现）：
+      //   message_start / ping / message_stop —— 丢弃（原流的框架已在 CC 侧）。
+      //   thinking 块（content_block_start type=thinking 及其 delta/stop）——
+      //     丢弃（prefill 里没放 thinking，但模型仍可能再思考一段；CC 侧消息
+      //     结构里再插思考块会打乱「思考→正文」叙事，且内容是重复思考，无用）。
+      //   message_delta —— 透传（stop_reason / usage 收尾）。usage 会把续写轮的
+      //     token 计入统计（recordUsage 由原流的 message_delta 处理器管，这里只
+      //     改写 delta 正文后透传）。
+      //   text 块 —— 首个 text 块做去重（stripRepeatedPrefix 剥掉模型重复输出的
+      //     prefill 尾部），以递增编号（sseState.nextBlockIndex 起）作为新
+      //     content_block 续转发；后续 text 块同样处理。
+      //   tool_use 块 —— 整块缓冲完整后以递增编号转发（与原流 toolBuffer 同理）。
+      // 续写流再断（recursive interruption）：正文期静默 / RST 同样处理——再续
+      //（attempt 上限内）或降级。CC 方向在续写流接入前由 keepalive 喂着，
+      // 接入后恢复真实字节。
+      function attachContinuationStream(upRes2, keyIdx2) {
+        currentKeyName = KEYS[keyIdx2].name;
+        const decoder2 = new TextDecoder('utf-8');
+        let buf2 = '';
+        let ev2 = '';
+        // 续写流自身的块解析状态：
+        let contTextStarted = false;   // 是否已见到首个（去重后的）text 块
+        let firstTextDone = false;     // 首个 text 块是否已完成去重转发
+        let dedupedAny = false;        // 首块去重是否剥掉了内容（打日志用）
+        let accText = '';              // 首个 text 块累计（收全一定量再判去重？不——
+        // 去重要在首 delta 到达时就判定前缀重复，但重复部分可能跨多条 delta。
+        // 折中：首个 text 块整体缓冲到 content_block_stop，一次去重后整块发出。
+        // 首块通常是「重复的 prefill 尾 + 少量新内容」，整块发不损失体验（续写
+        // 恢复本身就有秒级延迟）。后续 text 块恢复逐 delta 转发。
+        let firstTextBuf = null;       // { index, start data obj, delta lines }
+        let toolBuf2 = null;           // 续写流的 tool_use 缓冲（同原流 toolBuffer）
+        const prefillTailForDedup = (() => {
+          const parts = continuation.blocks.map((b) => (b.type === 'text' ? b.text : ''));
+          if (sseStateRef && sseStateRef.partialText) parts.push(sseStateRef.partialText);
+          return parts.join('\n');
+        })();
+
+        // 静默看门狗（续写流自己的正文期监控）：与原流同条件——只在该续写流已
+        // 转发过正文块后才武装（contEmittedBody 标记）。续写流的思考期（thinking
+        // 被剥壳、CC 侧无字节）静默属正常，提前武装会在思考静默 12s 时误判再断流、
+        // 打断本可成功的恢复。CC 方向靠 keepalive 维持。
+        let wd2 = null;
+        let contEmittedBody = false;
+        const arm2 = () => {
+          if (!contEmittedBody) return;
+          if (wd2) clearTimeout(wd2);
+          wd2 = setTimeout(() => {
+            wd2 = null;
+            if (clientRes.writableEnded || clientRes.destroyed) return;
+            log(`  续写流静默 ${UP_IDLE_TIMEOUT_MS}ms，再次断流续写`);
+            try { upRes2.destroy(); } catch { /* already gone */ }
+            continueInterrupted('continuation idle ' + UP_IDLE_TIMEOUT_MS + 'ms');
+          }, UP_IDLE_TIMEOUT_MS);
+        };
+        const disarm2 = () => { if (wd2) { clearTimeout(wd2); wd2 = null; } };
+
+        const finishFatal = (why) => {
+          disarm2();
+          stopKeepalive();
+          abortWithSseError(why);
+        };
+
+        upRes2.on('data', (chunk) => {
+          if (clientRes.destroyed || clientRes.writableEnded) {
+            try { upRes2.destroy(); } catch { /* already gone */ }
+            return;
+          }
+          buf2 += decoder2.decode(chunk, { stream: true });
+          let nl;
+          while ((nl = buf2.indexOf('\n')) >= 0) {
+            const line = buf2.slice(0, nl);
+            buf2 = buf2.slice(nl + 1);
+            if (line.startsWith('event:')) { ev2 = line; continue; }
+            if (!line.startsWith('data:')) continue;
+            let data;
+            try { data = JSON.parse(line.slice(5).trim()); } catch { continue; }
+
+            if (ev2.includes('message_start') || ev2.includes('ping')) {
+              continue; // 剥壳：原流框架已在 CC 侧
+            }
+            if (ev2.includes('content_block_start')) {
+              const cb = data.content_block || {};
+              if (cb.type === 'thinking') continue; // 剥壳：重复思考丢弃
+              if (cb.type === 'text') {
+                if (!firstTextDone) {
+                  // 首个 text 块：缓冲整块做去重。
+                  firstTextBuf = { start: data, deltas: [] };
+                } else {
+                  // 后续 text 块：以递增编号实时转发。
+                  const idx = sseStateRef ? sseStateRef.nextBlockIndex++ : data.index;
+                  const nd = { ...data, index: idx };
+                  clientRes.write('event: content_block_start\n');
+                  clientRes.write('data: ' + JSON.stringify(nd) + '\n\n');
+                  contEmittedBody = true;
+                }
+              } else if (cb.type === 'tool_use') {
+                toolBuf2 = { index: data.index, lines: [data] };
+              } else {
+                // 其它类型（redacted_thinking 等）：按 text 块外路径以递增编号转发。
+                const idx = sseStateRef ? sseStateRef.nextBlockIndex++ : data.index;
+                const nd = { ...data, index: idx };
+                clientRes.write('event: content_block_start\n');
+                clientRes.write('data: ' + JSON.stringify(nd) + '\n\n');
+              }
+              continue;
+            }
+            if (ev2.includes('content_block_delta')) {
+              const d = data.delta || {};
+              if (d.thinking_delta || d.signature_delta) continue; // 剥壳：思考丢弃
+              if (toolBuf2 && data.index === toolBuf2.index) {
+                toolBuf2.lines.push(data); // tool_use delta 攒着
+                continue;
+              }
+              if (firstTextBuf && data.index === firstTextBuf.start.index) {
+                firstTextBuf.deltas.push(data); // 首 text 块攒着（去重用）
+                continue;
+              }
+              if (typeof d.text === 'string' && !firstTextDone) continue; // 首块外的意外 text delta（防御）
+              // 后续 text 块的 delta：重映射编号转发。
+              const idx = sseStateRef ? sseStateRef.nextBlockIndex - 1 : data.index;
+              const nd = { ...data, index: idx };
+              clientRes.write('event: content_block_delta\n');
+              clientRes.write('data: ' + JSON.stringify(nd) + '\n\n');
+              continue;
+            }
+            if (ev2.includes('content_block_stop')) {
+              if (toolBuf2 && data.index === toolBuf2.index) {
+                // 续写流 tool_use 收全：递增编号整块转发（start + deltas + stop）。
+                const baseIdx = sseStateRef ? sseStateRef.nextBlockIndex++ : data.index;
+                clientRes.write('event: content_block_start\n');
+                clientRes.write('data: ' + JSON.stringify({ ...toolBuf2.lines[0], index: baseIdx }) + '\n');
+                for (const dl of toolBuf2.lines.slice(1)) {
+                  clientRes.write('event: content_block_delta\n');
+                  clientRes.write('data: ' + JSON.stringify({ ...dl, index: baseIdx }) + '\n');
+                }
+                clientRes.write('event: content_block_stop\n');
+                clientRes.write('data: ' + JSON.stringify({ type: 'content_block_stop', index: baseIdx }) + '\n\n');
+                contEmittedBody = true;
+                // 续写的 tool_use 块同样记入 prefill 素材（支持再断再续）。
+                try {
+                  let json2 = '';
+                  for (const dl of toolBuf2.lines.slice(1)) {
+                    const dd = dl.delta || {};
+                    if (typeof dd.partial_json === 'string') json2 += dd.partial_json;
+                  }
+                  let input2 = {};
+                  try { input2 = JSON.parse(json2); } catch {}
+                  continuation.blocks.push({
+                    type: 'tool_use',
+                    id: toolBuf2.lines[0].content_block.id,
+                    name: toolBuf2.lines[0].content_block.name,
+                    input: input2,
+                  });
+                } catch {}
+                toolBuf2 = null;
+                continue;
+              }
+              if (firstTextBuf && data.index === firstTextBuf.start.index) {
+                // 首 text 块收全：拼全文 → 去重 → 以递增编号整块转发。
+                let full = '';
+                for (const dl of firstTextBuf.deltas) {
+                  if (typeof dl.delta.text === 'string') full += dl.delta.text;
+                }
+                const deduped = stripRepeatedPrefix(prefillTailForDedup, full);
+                if (deduped !== full) dedupedAny = true;
+                firstTextDone = true;
+                firstTextBuf = null;
+                if (deduped) {
+                  const idx = sseStateRef ? sseStateRef.nextBlockIndex++ : 0;
+                  clientRes.write('event: content_block_start\n');
+                  clientRes.write('data: ' + JSON.stringify({ type: 'content_block_start', index: idx, content_block: { type: 'text', text: '' } }) + '\n');
+                  clientRes.write('event: content_block_delta\n');
+                  clientRes.write('data: ' + JSON.stringify({ type: 'content_block_delta', index: idx, delta: { type: 'text_delta', text: deduped } }) + '\n');
+                  clientRes.write('event: content_block_stop\n');
+                  clientRes.write('data: ' + JSON.stringify({ type: 'content_block_stop', index: idx }) + '\n\n');
+                  continuation.blocks.push({ type: 'text', text: deduped });
+                  contEmittedBody = true;
+                  stopKeepalive(); // 正文开始真实流动，注释行功成身退
+                } else {
+                  // 去重后为空（模型只重复了 prefill、无新内容）：不发块，
+                  // 等后续块或收尾。
+                }
+                continue;
+              }
+              // 后续 text / 其它块的 stop：重映射编号转发。
+              const idx = sseStateRef ? sseStateRef.nextBlockIndex - 1 : data.index;
+              clientRes.write('event: content_block_stop\n');
+              clientRes.write('data: ' + JSON.stringify({ ...data, index: idx }) + '\n\n');
+              if (sseStateRef) {
+                // 后续 text 块收全也记入 prefill 素材（再断再续时用）。
+                // 上面的 start/delta 处理里没有为后续 text 块累计文本，这里从
+                // data 里拿不到全文——为简化，续写流的后续 text 块不进 prefill
+                // 素材（再断时 prefill 缺这部分，恢复内容可能轻微回退）。
+                // 概率极低（续写又断 + 恰有多 text 块），接受此权衡。
+              }
+              continue;
+            }
+            if (ev2.includes('message_delta')) {
+              // 收尾 delta（stop_reason / usage）：透传。usage 计入统计由上游
+              // message_delta 的 recordUsage 路径管不了这里——直接补记一次。
+              try {
+                recordUsage(currentTarget, currentKeyName, data.usage);
+              } catch {}
+              clientRes.write('event: message_delta\n');
+              clientRes.write('data: ' + JSON.stringify(data) + '\n\n');
+              continue;
+            }
+            if (ev2.includes('message_stop')) {
+              // 原消息收尾：透传 message_stop 后 end。
+              clientRes.write('event: message_stop\n');
+              clientRes.write('data: ' + JSON.stringify({ type: 'message_stop' }) + '\n\n');
+              try { clientRes.end(); } catch { /* already gone */ }
+              log(`  断流续写完成（#${continuation.attempt}，去重${dedupedAny ? '生效' : '未触发'}，累计 ${continuation.blocks.length} 块）`);
+              return;
+            }
+            if (ev2.includes('error')) {
+              // 续写流自己报了错误事件：再试一次（上限内）或降级。
+              log(`  续写流内错误事件：${JSON.stringify(data).slice(0, 200)}`);
+              if (continuation.attempt < CONTINUATION_MAX_RETRY) {
+                continueInterrupted('continuation stream error');
+              } else {
+                finishFatal('continuation stream error (max retry)');
+              }
+              return;
+            }
+          }
+          arm2();
+        });
+        upRes2.on('end', () => {
+          disarm2();
+          stopKeepalive();
+          // 上游正常关流但没到 message_stop（罕见）：补 message_delta + message_stop
+          // 干净收尾，比挂着强。
+          if (clientRes.writableEnded || clientRes.destroyed) return;
+          try {
+            clientRes.write('event: message_delta\n');
+            clientRes.write('data: ' + JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null } }) + '\n\n');
+            clientRes.write('event: message_stop\n');
+            clientRes.write('data: ' + JSON.stringify({ type: 'message_stop' }) + '\n\n');
+            clientRes.end();
+            log('  断流续写完成（上游 end 提前，已补干净收尾）');
+          } catch { /* client gone */ }
+        });
+        upRes2.on('error', (err2) => {
+          disarm2();
+          log(`  续写流错误：${err2 && err2.message}`);
+          if (continuation.attempt < CONTINUATION_MAX_RETRY &&
+              !clientRes.writableEnded && !clientRes.destroyed) {
+            continueInterrupted(err2 && err2.message);
+          } else {
+            finishFatal(err2 && err2.message);
+          }
+        });
       }
 
       // Only rewrite the model on /v1/messages POSTs with a JSON body.
@@ -518,7 +970,10 @@ function startServer(cfg, adapter) {
 
       // Curate forwarded headers. The bridge sends x-api-key + anthropic-version per
       // attempt (the key itself rotates per attempt; host follows that key's endpoint).
-      const buildHeaders = (apiKey, keyUp) => {
+      // content-length 必须跟「本次实际发送的请求体」：常规转发是闭包的 body，
+      // 断流续写是更长的 contBodyBuf（2026-08-30 实测：不覆盖时上游按原 body 长度
+      // 截断续写体，报 422 json_invalid）——故加可选参 sendBody，默认 body。
+      const buildHeaders = (apiKey, keyUp, sendBody) => {
         const headers = {};
         for (const [k, v] of Object.entries(clientReq.headers)) {
           if (DROP_HEADERS.has(k.toLowerCase())) continue;
@@ -527,7 +982,8 @@ function startServer(cfg, adapter) {
         headers['host'] = keyUp.host;
         headers['x-api-key'] = apiKey;
         if (!headers['anthropic-version']) headers['anthropic-version'] = '2023-06-01';
-        headers['content-length'] = String(body.length);
+        const b = sendBody || body;
+        headers['content-length'] = String(b.length);
         return headers;
       };
 
@@ -559,19 +1015,60 @@ function startServer(cfg, adapter) {
           delete streamHeaders['content-length'];  // chunked encoding, no fixed length
           streamHeaders['transfer-encoding'] = 'chunked';
           clientRes.writeHead(upRes.statusCode || 502, streamHeaders);
+          // SSE 事件感知状态（断流续写靠它知道「已转发了什么」）：
+          //   nextBlockIndex —— 下一个要分配的 content_block 编号（原流从上游来，
+          //     续写流由桥接继续递增分配）。
+          //   partialText —— 正在转发的 text 块累计文本（断流时拼进 prefill）。
+          //   toolBuffer —— tool_use 块缓冲：input 的 partial_json 一条条攒着，
+          //     content_block_stop（input JSON 收全）后才一次性转发给 CC。半截
+          //     tool JSON 落到 CC 无意义（它要等完整 JSON 才能执行），且断流时
+          //     半截块既拼不进 prefill 也撤不回——缓冲完整再发，断流损失为零。
+          //   seenBodyBlock —— 是否已转发过正文块（text / tool_use），决定断流时
+          //     走续写（true）还是让 CC 自动重试（false）。
+          //   forwarded —— 已写给 CC 的正文文本累计（prefill 依据，含 partialText）。
+          const sseState = {
+            nextBlockIndex: 0,
+            partialText: '',
+            toolBuffer: null, // { index, header data 行, partial_json 行数组 }
+            seenBodyBlock: false,
+            // 本流已被放弃（断流续写接管 / SSE error 收尾后）：转发循环停止写、
+            // 销毁上游流。防 write-after-end（2026-08-30 断流续写实测抓到）。
+            abandoned: false,
+          };
+          sseStateRef = sseState; // 回填请求级引用，供续写流接入读块编号 / partialText
           let sseBuf = '';
           let pendingEvent = '';
           // TextDecoder stream 模式处理跨 chunk 的 UTF-8 多字节字符（中文 3 字节/字），
           // 避免 chunk 边界切断中文字符产生 U+FFFD 乱码（单 chunk toString 会丢字节）。
           const decoder = new TextDecoder('utf-8');
+          // 上游静默看门狗：正文期断流全是「静默 15s → 网关 RST」，桥接 12s 先行
+          // 判定、立即续写（省 3s，且不等 RST）。只在正文已开始转发后武装；每收
+          // 到字节刷新。思考期（未转发正文）不武装——那段的断流由 CC 自动重试
+          // 消化，桥接提前介入反而剥夺 CC 的重试。
+          const armIdleWatchdog = () => {
+            if (!sseState.seenBodyBlock) return; // 正文未开始，交给 CC
+            if (idleWatchdog) clearTimeout(idleWatchdog);
+            if (continuation.recovering) return; // 续写重连期静默属预期
+            idleWatchdog = setTimeout(() => {
+              idleWatchdog = null;
+              if (clientRes.writableEnded || clientRes.destroyed) return;
+              log(`  上游静默 ${UP_IDLE_TIMEOUT_MS}ms（正文期），主动断流续写${streamDiag()}`);
+              try { upRes.destroy(); } catch { /* already gone */ }
+              continueInterrupted('upstream idle ' + UP_IDLE_TIMEOUT_MS + 'ms');
+            }, UP_IDLE_TIMEOUT_MS);
+          };
+          const disarmIdleWatchdog = () => {
+            if (idleWatchdog) { clearTimeout(idleWatchdog); idleWatchdog = null; }
+          };
           upRes.on('data', (chunk) => {
             // 刷新断流诊断计数（idle / 累计字节），见变量声明处说明。
             lastUpDataAt = Date.now();
             upBytes += chunk.length;
-            // 防御：客户端响应已结束 / 已断开（如中途断连已补发 SSE error 收尾）时，
-            // 不再往 clientRes 写（write after end 会抛 ERR_STREAM_WRITE_AFTER_END），
-            // 直接丢弃上游残留数据并断开源流。
-            if (clientRes.destroyed || clientRes.writableEnded) {
+            // 防御：客户端响应已结束 / 已断开（如中途断连已补发 SSE error 收尾 / 续写
+            // 已接管）时，不再往 clientRes 写（write after end 会抛
+            // ERR_STREAM_WRITE_AFTER_END），直接丢弃上游残留数据并断开源流。
+            if (clientRes.destroyed || clientRes.writableEnded || sseState.abandoned) {
+              sseState.abandoned = true;
               try { upRes.destroy(); } catch { /* already gone */ }
               return;
             }
@@ -580,6 +1077,74 @@ function startServer(cfg, adapter) {
             while ((nl = sseBuf.indexOf('\n')) >= 0) {
               const line = sseBuf.slice(0, nl);
               sseBuf = sseBuf.slice(nl + 1);
+              // --- 块状态跟踪（断流续写的依据，只观测不改写转发内容） -------------
+              // text 块：content_block_start/delta 照常实时转发（体验不变），
+              // delta 的文本顺带累计进 partialText（断流时拼 prefill）。
+              // tool_use 块：start/delta 攒进 toolBuffer 不转发，content_block_stop
+              // 时一次性转发缓冲的全部行——半截 tool JSON 对 CC 无用，缓冲完整再
+              // 发，断流零损失（详见 sseState.toolBuffer 声明处注释）。
+              try {
+                if (pendingEvent.includes('content_block_start')) {
+                  const data = JSON.parse(line.slice(5).trim());
+                  if (data.content_block && data.content_block.type === 'tool_use') {
+                    sseState.toolBuffer = { index: data.index, lines: ['data: ' + JSON.stringify(data)] };
+                    sseState.nextBlockIndex = Math.max(sseState.nextBlockIndex, data.index + 1);
+                    sseState.seenBodyBlock = true;
+                    continue; // 不转发，等收全
+                  }
+                  if (data.content_block && data.content_block.type === 'text') {
+                    sseState.partialText = '';
+                    sseState.nextBlockIndex = Math.max(sseState.nextBlockIndex, data.index + 1);
+                    sseState.seenBodyBlock = true;
+                  }
+                } else if (pendingEvent.includes('content_block_delta')) {
+                  const data = JSON.parse(line.slice(5).trim());
+                  if (sseState.toolBuffer && data.index === sseState.toolBuffer.index) {
+                    sseState.toolBuffer.lines.push('data: ' + JSON.stringify(data));
+                    continue; // tool_use 的 delta 攒着
+                  }
+                  if (data.delta && typeof data.delta.text === 'string') {
+                    sseState.partialText += data.delta.text;
+                  }
+                } else if (pendingEvent.includes('content_block_stop')) {
+                  const data = JSON.parse(line.slice(5).trim());
+                  if (sseState.toolBuffer && data.index === sseState.toolBuffer.index) {
+                    // tool_use 收全：一次性转发缓冲的 start + deltas + 本条 stop。
+                    for (const buffered of sseState.toolBuffer.lines) {
+                      clientRes.write(buffered + '\n');
+                    }
+                    // 完整 tool_use 块记入续写 prefill 素材（input 已在 start+deltas 里）。
+                    try {
+                      const start = JSON.parse(sseState.toolBuffer.lines[0].slice(5).trim());
+                      // partial_json 拼接成完整 input：GLM 实测整段 JSON 放单条
+                      // partial_json，但规范允许多条分片——先把所有分片按序拼成
+                      // 一个字符串再 parse，天然覆盖两种形态。
+                      let json = '';
+                      for (const l of sseState.toolBuffer.lines.slice(1)) {
+                        const d = JSON.parse(l.slice(5).trim());
+                        if (d.delta && typeof d.delta.partial_json === 'string') json += d.delta.partial_json;
+                      }
+                      let input = {};
+                      try { input = JSON.parse(json); } catch { /* 上游给的拼不完整，尽力而为 */ }
+                      continuation.blocks.push({
+                        type: 'tool_use',
+                        id: start.content_block.id,
+                        name: start.content_block.name,
+                        input,
+                      });
+                    } catch { /* prefill 素材尽力积累，失败不影响转发 */ }
+                    clientRes.write(line + '\n');
+                    pendingEvent = '';
+                    sseState.toolBuffer = null;
+                    continue;
+                  }
+                  if (sseState.partialText) {
+                    // text 块收全：完整文本记入续写 prefill 素材，清空累计。
+                    continuation.blocks.push({ type: 'text', text: sseState.partialText });
+                    sseState.partialText = '';
+                  }
+                }
+              } catch { /* 块跟踪解析失败不影响原样转发 */ }
               if (line.startsWith('event:')) {
                 pendingEvent = line;
                 clientRes.write(line + '\n');
@@ -641,16 +1206,29 @@ function startServer(cfg, adapter) {
                 if (line.trim() === '') pendingEvent = '';
               }
             }
+            armIdleWatchdog();
           });
           upRes.on('end', () => {
+            disarmIdleWatchdog();
+            stopKeepalive();
             sseBuf += decoder.decode();  // flush 剩余字节（正常为空）
             if (clientRes.destroyed || clientRes.writableEnded) return; // 已补发 error 收尾，不再写
             if (sseBuf.trim()) clientRes.write(sseBuf);
             clientRes.end();
           });
           upRes.on('error', (err) => {
+            disarmIdleWatchdog();
             log(`  upstream 流错误：${err && err.message}${streamDiag()}`);
-            abortWithSseError(err && err.message);
+            // 静默看门狗主动 destroy 后随之而来的 error（ECONNRESET 等）是预期回声，
+            // 续写已由看门狗发起，不要重复触发。
+            if (continuation.recovering) return;
+            // 正文期断流走续写（不向 CC 报错）；思考期断流维持 SSE error 收尾
+            //（CC 自动重试）。
+            if (sseState.seenBodyBlock && !clientRes.writableEnded && !clientRes.destroyed) {
+              continueInterrupted(err && err.message);
+            } else {
+              abortWithSseError(err && err.message);
+            }
           });
         } else {
           // Non-streaming: buffer JSON, record usage, inject modelUsage (when mu), send.
