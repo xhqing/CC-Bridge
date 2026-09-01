@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+### 变更（项目规则并入 CLAUDE.md，删除 .claude/rules/ 目录）
+
+- **为什么改**：用户要求（2026-09-01）把 `.claude/rules/` 下的规则内容直接并入 `.claude/CLAUDE.md`，去掉 `@rules/` 间接引用这一层，项目指南单文件自洽（ZCode 等不解析 `@` 引用的 agent 也能直接读到规则全文）。
+- **改了什么**：`.claude/CLAUDE.md`「项目规则」节的 `@rules/cc-bridge-install.md` 引用行替换为该规则全文（核心原则 / 安装升级流程 / 发新版本流程 / 自检四节，正文一字未改，仅小节标题随并入降一级，并加一行来源说明）；删除 `.claude/rules/` 目录（唯一文件 `cc-bridge-install.md` 的内容已并入，无信息丢失）。`AGENTS.md` 软链接指向 `.claude/CLAUDE.md` 不受影响，自动跟随。
+
 ## [2.15.1] - 2026-08-31
 
 ### 修复（T15：tool_use 缓冲转发的 SSE 事件破碎——CC 侧 "JSON Parse error: Unexpected EOF" 根治）
