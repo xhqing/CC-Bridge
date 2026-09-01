@@ -1,6 +1,6 @@
 {
   "name": "cc-bridge",
-  "version": "2.15.1",
+  "version": "2.15.2",
   "description": "CC-Bridge — Claude Code upstream bridge framework (GLM / DeepSeek / MiMo / Kimi / Qwen …). Routes Claude Code to third-party models via spoofed whitelist IDs, pins per-model thinking levels via config (CC's /effort doesn't affect the upstream), and fails over across multiple API keys. GLM / DeepSeek / MiMo adapters included.",
   "private": true,
   "bin": {
