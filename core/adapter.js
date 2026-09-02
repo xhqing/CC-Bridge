@@ -16,6 +16,14 @@
 //   adaptRequestBody(obj, ctx)  改写 Anthropic 请求体（上游专属适配），ctx = { target }。
 //                   思考字段（thinking / output_config.effort）不在此改写——/effort 档位
 //                   原样透传、由上游端点按官方映射解读（2026-08-22 T11 下线钉死）
+//   preprocessEnv(env)   （可选钩子）config.js 解析平铺变量前调用，让上游把自定义
+//                   「分节配置」改写（mutate）为标准平铺变量（hybrid 混合桥用它把
+//                   PROVIDER 分节摊平为 API_BASES / API_KEY_n / MODEL_MAP）。抛 Error
+//                   会被记入 providerConfigError、由 validate 报出。未实现零影响。
+//   routeKeys(target, KEYS)  （可选钩子）server 每请求调用：按 target 收窄本请求可用
+//                   的 KEY 索引数组（hybrid 按「provider:」前缀限定到该成员的 KEY）。
+//                   返回 null / 未实现 = 全部 KEY（旧行为）；空数组由 server 报错
+//                   （不误路由到其它成员）。
 
 const fs = require('fs');
 const path = require('path');
@@ -27,6 +35,9 @@ const REGISTRY = {
   qwen: { dir: 'qwen-bridge', implemented: false },
   mimo: { dir: 'mimo-bridge', implemented: true },
   ds: { dir: 'ds-bridge', implemented: true },
+  agnes: { dir: 'agnes-bridge', implemented: true },
+  // 混合上游：一个端口服务多个提供商，按模型路由（成员为上述已实现上游）。
+  hybrid: { dir: 'hybrid-bridge', implemented: true },
 };
 
 // 内置默认上游（代码级兜底）。用户可通过 `cc-bridge set default upstream <name>`

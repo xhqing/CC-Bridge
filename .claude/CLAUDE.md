@@ -4,7 +4,7 @@
 
 本项目由 **Anvil**（BackendEngineerAgent，用户的后端开发工程师）负责维护。Anvil 负责本项目全部后端开发工作——框架 `core/`、各上游适配器 `<name>-bridge/`、CLI、多 key 故障转移、守护进程等。在本项目内的开发 / 维护需求，由 Anvil 统一处理（Anvil 的角色定义与工作原则见 BackendEngineerAgent 项目的 `.claude/CLAUDE.md`）。
 
-CC-Bridge 是 Claude Code 上游桥接框架（GLM / DeepSeek / MiMo / Kimi / Qwen …）。通用框架在 [`core/`](../core/)，每个上游一个 `<name>-bridge/adapter.js`，通过 `core/adapter.js` 注册表加载。当前已实现 `glm`（GLM-5.3，z.ai 国际版 / 智谱 bigmodel.cn 国内版）、`ds`（DeepSeek-V4）、`mimo`（小米 MiMo），`kimi` / `qwen` 为预留。
+CC-Bridge 是 Claude Code 上游桥接框架（GLM / DeepSeek / MiMo / Agnes / Kimi / Qwen …）。通用框架在 [`core/`](../core/)，每个上游一个 `<name>-bridge/adapter.js`，通过 `core/adapter.js` 注册表加载。当前已实现 `glm`（GLM-5.3，z.ai 国际版 / 智谱 bigmodel.cn 国内版）、`ds`（DeepSeek-V4）、`mimo`（小米 MiMo）、`agnes`（Agnes AI 2.5，Anthropic 兼容端点、境外需可选 `UPSTREAM_PROXY`），`kimi` / `qwen` 为预留。
 
 ## BackendEngineerAgent（Anvil）CLAUDE.md 全文（随附，保证内容超集）
 

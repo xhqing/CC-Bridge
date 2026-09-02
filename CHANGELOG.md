@@ -2,6 +2,38 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [2.16.0] - 2026-09-01
+
+### 新增（agnes 上游：Agnes AI 桥接适配器 + 框架上游代理支持，T17）
+
+- **为什么改**：用户想把 hybrid 的 haiku / sonnet 角色映射到 agnes-2.5-flash（免费通道），发现 agnes 此前仅作为分类器旁路使用、不是注册表上游。调研（官方文档 wiki.agnes-ai.com + 本地实测，2026-09-01）确认 Agnes 提供官方 **Anthropic 兼容端点** `POST /v1/messages`（`x-api-key` + `anthropic-version` 认证，支持流式 / tools / Anthropic 格式 `thinking` 字段），按 mimo-bridge 轻量模式立项即可，无需协议翻译。
+- **改了什么**：
+  - **新增 `agnes-bridge/`**（adapter.js + agnes.env.example）：模型表按官方文档（agnes-2.5-flash 512K 窗口 / 65536 最大输出、当前促销价 $0/1M；agnes-2.5-pro 与 pro-beta 1M / 65536、付费；agnes-2.0-flash 与 pro-alpha 已官方废弃不进表），`adaptRequestBody` 仅钳 `max_tokens`（透传原则同 MiMo）。`defaultTarget: agnes-2.5-flash`。注册表 `core/adapter.js` 加行后 hybrid 成员自动可用（`AGNES_BASES` / `AGNES_API_KEY_n` 分节 + `MODEL_MAP` 写 `agnes:agnes-2.5-flash`）。
+  - **框架上游代理支持（`UPSTREAM_PROXY`，可选配置项）**：agnes 等境外上游直连不通 / 不稳时，配置 HTTP 代理让所有对上游端点的请求经代理出站。`core/config.js` 解析 + `config show` 展示；`core/server.js` 构造 `HttpsProxyAgent`（复用既有依赖 https-proxy-agent）注入主转发与断流续写两处上游请求，banner 打 `upstream via` 行；非法代理 URL 启动即报错（不静默直连）。仅作用于 https 端点（生产端点全是 https，http 端点是本地 mock 场景）；未配置零影响、不自动 fallback 到 shell 的 `HTTPS_PROXY`（daemon 环境来源不可控，境内端点自动走代理反而有害）；不影响分类器通道（classifier 自带 HTTPS_PROXY 感知）。
+  - **周边同步**：CLI HELP 标题行加 Agnes（上游列表本就动态生成）；`package.json`（files 加 agnes-bridge、description / keywords）；主 README 中英双语（已实现列表、可用上游表、思考等级透传节、文件表）；hybrid README 与 hybrid.env.example 成员列表加 agnes + `UPSTREAM_PROXY` 提示（注明全局性：配置后境内端点也绕代理）；`.claude/CLAUDE.md`（AGENTS.md 软链接跟随）已实现列表更新。
+  - **hybrid.env.example 默认成员与映射改为 GLM + Agnes 双激活**（2026-09-01 用户指定）：`claude-haiku-4-5` 与 `claude-sonnet-5` 的默认映射从 ds flash / glm-4.6 改为 `agnes-2.5-flash`（免费轻量角色），AGNES 分节解开为默认激活成员（避免 MODEL_MAP 引用 `agnes:` 而成员节注释着、照抄启动即报 provider 未配置）、DS / MiMo 降为注释示例块；第三对保留「省略前缀自动限定」教学演示（`claude-sonnet-5->agnes-2.5-flash`）。已用框架 parseEnv + preprocessEnv 验证模板激活态通过启动校验（三端点摊平、三条映射、KEY 归属正确）。
+  - **hybrid.env.example 映射扩为五对、DS 分节激活**（2026-09-02 用户指定）：加 `claude-opus-4-7->glm:glm-5.3-flash` 与 `claude-opus-4-6->ds:deepseek-v4-flash`，DS 分节随之解开为默认激活成员（成员 3，否则照抄启动报 provider 'ds' 未配置）——默认成员集变为 GLM + Agnes + DeepSeek 三家、MiMo 留作注释示例。验证：parseEnv + preprocessEnv 通过（四端点摊平 glm-zai / glm-cn / agnes-default / ds-default、五条映射全部限定、四 KEY 归属正确）。
+- **已知限制（实测记录，非阻塞）**：agnes 网关的流式响应**不发 `message_delta` 事件**（只有 start / block* / stop，2026-09-01 多轮实测确认，类似 z.ai 的不规范先例）——框架的 modelUsage 注入点在 message_delta 上，对该网关落空（CC 将按内置表猜窗口）；流式 output 统计记 0（非流式 usage 完整正常）。网关**默认输出 thinking 块**（未请求思考时也有，Claude Code 可正常处理）。补丁方向（流内检测无 delta 则合成补发）记 TODO T18。
+- **实测验证**：`tmp/test-agnes.js` 端到端（开发源码起桥，真端点经 `UPSTREAM_PROXY=http://127.0.0.1:1087`）5 项全过：非流式 200 + model 改写（claude-opus-4-8 → agnes-2.5-flash，响应 model 字段实证）、tools 强制调用（tool_use 块 + stop_reason=tool_use + 入参正确）、流式 SSE 事件序列（thinking + text 块）、message_delta 缺失形态（已知限制路径按预期记录）；`tmp/test-agnes-hybrid.js` 配置层集成 9 项全过（AGNES 分节发现与摊平、端点 `<provider>-` 前缀、KEY 跨节重编号与绑定、qualified target 限定、合并窗口表 qualified 键、routeKeys 收窄 [1,2]、未配置 AGNES 节时报 provider 错误）；既有回归无破坏：`tmp/test-hybrid.js` 18 项、`tmp/test-modelusage.js`（T14 注入）PASS、`node --check` 全部通过；CLI 面验证 `agnes` 被识别为合法上游、hybrid 错误路径报文正常。
+
+### 修复（断流续写 thinking 剥壳不完整——CC 侧 "API Error: Content block not found" 根治）
+
+- **为什么改**：2026-09-01 用户报 glm 桥生产环境 CC 侧偶发 `API Error: Content block not found`。排查定位：该错误文本既不在桥日志也不在上游响应里，反编译 CC 2.1.226 二进制确认它是 **CC 客户端本地错误**——流 reducer 收到引用未知块的 `content_block_delta` / `content_block_stop`（从未 `content_block_start` 过的 index）时抛 `RangeError("Content block not found")`。桥侧根因在 `attachContinuationStream`（断流续写流的剥壳逻辑）：设计上要丢弃续写流重复输出的 thinking 块，但只剥了 start、漏了 delta 与 stop——① delta 剥壳条件写错字段名，`d.thinking_delta || d.signature_delta` 检查的是 delta 对象上**不存在**的字段（协议的判别字段是 `delta.type`，取值 `"thinking_delta"` / `"signature_delta"`），条件恒假，thinking 的 delta 从未被剥；② stop 分支没有按块类型剥壳的路径，thinking 的 stop 落入「后续块一律重映射转发」兜底。两者都以 `nextBlockIndex - 1` 重映射编号转发给 CC——当断流点在 tool_use 半截缓冲（start 被 toolBuffer 扣住未转发、编号已占用）时，该编号指向 CC 从未见过 start 的块 → 孤儿 delta/stop → CC 报 "Content block not found"。触发条件 = 正文期断流（bigmodel.cn 网关 ~15s 静默 RST，桥 12s 看门狗主动续写，生产日志 2026-09-01 当日 12+ 次）+ 续写流先输出 thinking 块 + 断点恰在 tool_use 半截，三者叠加故偶发。2.15.1 的 `tmp/test-continuation-sse.js` 回归没抓住，一是其断流点在半截 text 块，孤儿事件重映射后的编号恰好闭合该半截块、歪打正着不报错；二是其客户端只按 W3C 规范做事件分组校验，没有实现 CC reducer 的块引用语义检查。
+- **改了什么**（`core/server.js` `attachContinuationStream`）：thinking 块剥壳补齐为三件套（start / delta / stop）一致——新增 `skipBlockIdx` 跟踪正在剥壳的 thinking 块：start 剥壳时记录其 index；delta 剥壳条件修正为按 `delta.type` 判别 + index 匹配双保险；stop 分支开头按 index 匹配剥掉并复位。thinking 块的事件全部不再进入转发，续写块编号空间不受污染。
+- **实测验证**：`tmp/repro/`（mock 上游 + 隔离配置的开发源自测桥 + 按 CC reducer 逻辑实现的严格事件检查器）端到端三场景：① 复现场景（tool_use 半截断流 + 续写带 thinking）：修复前 CC 视角 3 条孤儿事件（thinking delta × 2 + stop，引用未知块 index=2）复现报错，修复后事件序列合法、续写正文以正确编号（3）续接；② 对照场景「断流点在半截 text + 续写带 thinking」与「tool_use 半截断流 + 续写不带 thinking」修复后均通过，常规续写路径无回归；③ `node --check` 语法通过。
+
+### 新增（hybrid 混合上游：一个端口服务多个模型提供商，按模型路由）
+
+- **为什么改**：此前每接一家上游就要起一个独立端口 / 配置（glm 8788、ds 8792、mimo 8791…），Claude Code 想在不同提供商的模型间切换就得换 `ANTHROPIC_BASE_URL`。用户需要（2026-09-01）一个「混合桥」：一个端口后面的配置里可同时配多家提供商的 URL 与 KEY、模型映射可映射到不同提供商的模型——CC 只配一个 base URL，`/model` 切换即切背后的提供商。
+- **改了什么**：
+  - **新增 `hybrid-bridge/`**（adapter.js + hybrid.env.example + README.md）：hybrid 是「混合上游」，把多个已实现上游组合在一个端口后面，成员可任选（glm / ds / mimo，不能嵌套 hybrid 自身）。配置按「成员分节」组织（节前缀 = 成员名大写）：`GLM_BASES` / `GLM_API_KEY_n`（含 `_NAME` / `_BASE` / `_PRIORITY` / `_HIDE_USER_ID` 属性，语义同平铺写法）、`DS_BASE` / `DS_API_KEY_1` 等；`MODEL_MAP` 的 target 带 `provider:` 前缀限定归属（`claude-opus-4-8->glm:glm-5.3`），省略前缀时恰好一家成员认识该模型则自动限定、零家 / 多家（歧义）在启动校验报错。分节与顶层平铺（`API_BASES` / `API_KEY_n`）不能混用；`CLASSIFIER_*` 等全局变量仍写顶层。用法与其它上游一致：`cc-bridge hybrid start` / `config` / `stats`，也可 `set default upstream hybrid`。
+  - **框架新增两个可选 adapter 钩子**（既有上游零影响，`core/adapter.js` 接口文档同步补说明）：
+    - `preprocessEnv(env)`——`core/config.js` 在解析平铺变量前调用：hybrid 用它把成员分节摊平为标准平铺变量——API_BASES 端点名加 `<provider>-` 前缀（防跨节撞名）、KEY 跨节统一重编号且未显式绑端点的 KEY 绑本节第一个端点（不是全局第一个——那是别家成员的）、MODEL_MAP target 限定。摊平后校验 / KEY 轮换 / 熔断 / 统计 / daemon / GUI 全部无感知复用。钩子抛错记入 `providerConfigError`、由 validate 报出（`config show` 也展示），保持 loadConfig「永不抛错」契约；预留未实现上游（kimi / qwen）跳过钩子，不影响 stop / status 等只读命令。
+    - `routeKeys(target, KEYS)`——`core/server.js` 每请求调用：按 target 的 provider 前缀返回该成员的 KEY 索引集合，KEY 轮换 / 熔断 / 断流续写的 KEY 候选都只在集合内进行——**成员内容灾、绝不跨成员**（模型在别家不存在，跨过去只会 400）；返回空集合时直接报错、不误路由到别家。
+  - **hybrid adapter 本体**：`adaptRequestBody` 剥掉 `obj.model` 的 `provider:` 前缀后委派给成员 adapter（GLM 钳 max_tokens、DeepSeek 修 tool 序列等专属适配照常生效）；`modelContextWindow` / `modelMaxTokens` 按成员官方文档表以 qualified 键（`glm:glm-5.3`）合并，modelUsage 注入各 target 各的真实窗口（glm:glm-5.3=1M / glm:glm-4.6=200K / ds:deepseek-v4-pro=1M…）。
+  - **周边同步**：`core/server.js` 请求级 KEY 收窄（`pickNextKey` / 断流续写 `tryKeys` / `finalError` 的 KEY 数口径都随收窄）+ dump 文件名冒号清洗（qualified target 含 `:`，Windows 文件名非法）；CLI HELP 文案加 Hybrid；`package.json`（files 增 hybrid-bridge、description / keywords、版本 2.16.0）；主 README 中英双语同步（可用上游表、它能做什么、文件表、添加新上游节各加 hybrid 内容）。
+- **实测验证**：`tmp/test-hybrid.js` 端到端（GLM 双端点双 KEY + DS 单端点单 KEY 三个 mock 上游）**18 项全过**：配置摊平（端点前缀 / KEY 重编号与绑定 / PAIRS 限定）、MODEL_MAP 省略 provider 自动限定（glm-4.6 → glm:glm-4.6）、spoof 路由到正确成员且上游收到裸模型名（前缀已剥）与正确 KEY、GLM 第一 KEY 401 熔断只切本成员第二 KEY 且 DS mock 全程零请求（不跨成员容灾）、直发 qualified target（glm:glm-4.6）可识别可路由、未知模型 HTTP 400 不静默改写、modelUsage 按 qualified target + spoof 双命中注入、无分节 / 分节平铺混用 / MODEL_MAP 未知模型三条错误路径均报出且 loadConfig 不抛。存量回归：`tmp/test-modelusage.js`（多对窗口注入）与 `tmp/test-continuation-sse.js`（tool_use 缓冲转发 + 断流续写 SSE 事件完整性，15 事件全绿）无回归。CLI 面验证：`hybrid config show` 正确展示摊平结果（3 端点 / 3 对映射 / 3 KEY 归属）与 provider 错误。
+
 ## [2.15.2] - 2026-09-01
 
 ### 变更（项目规则并入 CLAUDE.md，删除 .claude/rules/ 目录）

@@ -20,7 +20,7 @@ const { runUpdate, runRollback } = require('../core/update');
 // help 文案与上游省略时的解析都用它。
 const DEFAULT = getDefaultUpstream();
 
-const HELP = `cc-bridge — Claude Code upstream bridge (GLM / DeepSeek / MiMo / Kimi / Qwen …)
+const HELP = `cc-bridge — Claude Code upstream bridge (GLM / DeepSeek / MiMo / Agnes / Kimi / Qwen / Hybrid multi-provider …)
 
 Usage:
   cc-bridge [upstream] <command> [args]
@@ -90,9 +90,9 @@ function parseGlobalConfig(argv) {
 }
 
 // Split the post-options argv into { upstream, cmd, sub, explicit }. If the first
-// token is a known upstream name (ds/glm/kimi/mimo/qwen), treat it as the upstream
-// selector; otherwise default upstream (user-set > built-in) and treat the first
-// token as the command. explicit = 是否显式写了上游名（stats 等命令区分聚合/单上游）。
+// token is a known upstream name (ds/glm/kimi/mimo/qwen/agnes/hybrid), treat it as the
+// upstream selector; otherwise default upstream (user-set > built-in) and treat the
+// first token as the command. explicit = 是否显式写了上游名（stats 等命令区分聚合/单上游）。
 function parseUpstream(rest) {
   if (rest.length && isKnown(rest[0])) {
     return { upstream: rest[0], cmd: rest[1], sub: rest.slice(2), explicit: true };

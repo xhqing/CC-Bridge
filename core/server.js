@@ -23,6 +23,7 @@ const fs = require('fs');
 const path = require('path');
 const { resolvePairs, statsPathFor } = require('./config');
 const classifier = require('./classifier');
+const { HttpsProxyAgent } = require('https-proxy-agent');
 
 // --- 同 KEY 瞬态重试 --------------------------------------------------------
 // 上游遇瞬态错误（DNS 失败 / 连接挂断 / 429 / 5xx）时，对同一 KEY 重试 N 次、
@@ -318,6 +319,23 @@ function startServer(cfg, adapter) {
   // 每个 KEY 的目标端点 URL 对象（与 KEYS 一一对应；多端点时各 KEY 可能不同）。
   const keyUpstreams = KEYS.map((k) => new URL(k.base));
 
+  // --- 上游转发代理（UPSTREAM_PROXY，可选）----------------------------------
+  // 境外上游（agnes 等）直连不通 / 不稳时，配置 http 代理让所有对上游端点的请求
+  // 经代理出站（主转发与断流续写都走）。仅作用于 https 端点（生产端点全是 https；
+  // http 端点是本地 mock 场景，走代理反而错）。未配置（默认）保持直连，零影响。
+  // 代理 URL 非法时启动即报错退出——静默直连会让用户误以为已走代理。
+  let upstreamProxyAgent = null;
+  if (cfg.UPSTREAM_PROXY) {
+    try {
+      upstreamProxyAgent = new HttpsProxyAgent(cfg.UPSTREAM_PROXY);
+    } catch (e) {
+      console.error(`[bridge] invalid UPSTREAM_PROXY "${cfg.UPSTREAM_PROXY}": ${e.message}`);
+      process.exit(1);
+    }
+  }
+  const proxyAgentFor = (keyUp) =>
+    (upstreamProxyAgent && keyUp.protocol === 'https:' ? upstreamProxyAgent : undefined);
+
   // 每个 KEY 的熔断到期时间戳（0 = 未熔断）。
   const keyBlockedUntil = new Array(KEYS.length).fill(0);
 
@@ -585,8 +603,11 @@ function startServer(cfg, adapter) {
           const contBodyBuf = Buffer.from(JSON.stringify(contBody), 'utf-8');
 
           // 走与 send() 相同的 KEY 选择 / 熔断逻辑，但响应处理换成续写壳。
+          // KEY 候选同样按请求级收窄（eligibleKeys）——续写必须回到原成员的 KEY。
           const tryKeys = [];
-          for (let i = 0; i < KEYS.length; i++) if (!tried.has(i)) tryKeys.push(i);
+          for (let i = 0; i < KEYS.length; i++) {
+            if (!tried.has(i) && (!eligibleKeys || eligibleKeys.has(i))) tryKeys.push(i);
+          }
           if (!tryKeys.length) tryKeys.push(currentKey);
           const attemptCont = (ki) => {
             if (ki >= tryKeys.length) {
@@ -605,6 +626,7 @@ function startServer(cfg, adapter) {
               path: keyUp.pathname.replace(/\/+$/, '') + clientReq.url,
               method: clientReq.method,
               headers: buildHeaders(KEYS[keyIdx2].value, keyUp, contBodyBuf),
+              agent: proxyAgentFor(keyUp),
             });
             upReq.setSocketKeepAlive(true, 15000);
             upReq.on('response', (res2) => {
@@ -664,6 +686,13 @@ function startServer(cfg, adapter) {
         // 续写流自身的块解析状态：
         let contTextStarted = false;   // 是否已见到首个（去重后的）text 块
         let firstTextDone = false;     // 首个 text 块是否已完成去重转发
+        // 正在剥壳的 thinking 块的上游 index：thinking start 剥壳时记录，其 delta /
+        // stop 事件据此一并剥掉，stop 后复位。剥壳必须三件套（start / delta / stop）
+        // 一致——只剥 start 不剥 delta / stop 时，孤儿 delta / stop 会以
+        // nextBlockIndex-1 重映射发给 CC，引用 CC 从未见过 start 的块（典型：断流点
+        // 在 tool_use 半截缓冲，编号已占用但 start 未转发），CC reducer 抛
+        // "Content block not found"（2026-09-01 生产实测复现，v2.16.0 修复）。
+        let skipBlockIdx = -1;
         let dedupedAny = false;        // 首块去重是否剥掉了内容（打日志用）
         let accText = '';              // 首个 text 块累计（收全一定量再判去重？不——
         // 去重要在首 delta 到达时就判定前缀重复，但重复部分可能跨多条 delta。
@@ -723,7 +752,10 @@ function startServer(cfg, adapter) {
             }
             if (ev2.includes('content_block_start')) {
               const cb = data.content_block || {};
-              if (cb.type === 'thinking') continue; // 剥壳：重复思考丢弃
+              if (cb.type === 'thinking') {
+                skipBlockIdx = data.index; // 剥壳：重复思考丢弃（delta/stop 据此一并剥）
+                continue;
+              }
               if (cb.type === 'text') {
                 if (!firstTextDone) {
                   // 首个 text 块：缓冲整块做去重。
@@ -749,7 +781,11 @@ function startServer(cfg, adapter) {
             }
             if (ev2.includes('content_block_delta')) {
               const d = data.delta || {};
-              if (d.thinking_delta || d.signature_delta) continue; // 剥壳：思考丢弃
+              // 剥壳：思考丢弃。按 delta.type 判别（协议判别字段；原写法
+              // d.thinking_delta / d.signature_delta 是不存在的字段名、恒假，
+              // 导致思考 delta 从未被剥、以错位编号转发——本次修复点之一）。
+              if (d.type === 'thinking_delta' || d.type === 'signature_delta') continue;
+              if (data.index === skipBlockIdx) continue; // 剥壳块的任何 delta 都不发
               if (toolBuf2 && data.index === toolBuf2.index) {
                 toolBuf2.lines.push(data); // tool_use delta 攒着
                 continue;
@@ -767,6 +803,12 @@ function startServer(cfg, adapter) {
               continue;
             }
             if (ev2.includes('content_block_stop')) {
+              if (data.index === skipBlockIdx) {
+                // 剥壳：thinking 块的 stop 一并丢弃（start/delta 都没发给 CC，
+                // stop 也不能发——发出去就是引用未知块的孤儿 stop）。
+                skipBlockIdx = -1;
+                continue;
+              }
               if (toolBuf2 && data.index === toolBuf2.index) {
                 // 续写流 tool_use 收全：递增编号整块转发（start + deltas + stop）。
                 // 每个事件都以空行收口——SSE 事件以空行分隔，缺了会把多行 data 拼
@@ -966,7 +1008,7 @@ function startServer(cfg, adapter) {
               const dumpDir = path.join(path.dirname(cfg.configPath), 'dumps');
               fs.mkdirSync(dumpDir, { recursive: true });
               const ts = new Date().toISOString().replace(/[:.]/g, '-');
-              const safeTarget = (currentTarget || 'unknown').replace(/[\/]/g, '-');
+              const safeTarget = (currentTarget || 'unknown').replace(/[\/:]/g, '-');
               const dumpFile = path.join(dumpDir, `${ts}-rewritten-${safeTarget}.json`);
               fs.writeFileSync(dumpFile, JSON.stringify(obj, null, 2));
               log(`  dumped rewritten request → ${dumpFile}`);
@@ -976,6 +1018,34 @@ function startServer(cfg, adapter) {
           }
         } catch {
           // Not JSON / unparseable — forward the original body untouched.
+        }
+      }
+
+      // --- 请求级 KEY 收窄（混合桥等按 target 路由的 adapter 用）----------------
+      // adapter 实现了 routeKeys(target, KEYS) 时，本请求只在返回的 KEY 子集内
+      // 轮换 / 容灾——hybrid 按 target 的「provider:」前缀把请求限定到该成员的
+      // KEY（跨成员容灾无意义：模型在别家不存在，换了只会 400）。返回 null /
+      // 未实现 → 全部 KEY（与旧行为一致）；返回空数组 → 该成员没配 KEY（正常
+      // 会被启动校验拦住，此处兜底直接报错，绝不误路由到别家）。非 /v1/messages
+      // 请求（currentTarget 为 null）不收窄。
+      let eligibleKeys = null; // null = 全部；否则为允许使用的 KEY 索引集合
+      if (typeof adapter.routeKeys === 'function' && currentTarget) {
+        let idxs = null;
+        try { idxs = adapter.routeKeys(currentTarget, KEYS); } catch { idxs = null; }
+        if (Array.isArray(idxs)) {
+          eligibleKeys = new Set(idxs.filter((i) => Number.isInteger(i) && i >= 0 && i < KEYS.length));
+          if (!eligibleKeys.size) {
+            log(`  no keys routed for target ${currentTarget}`);
+            clientRes.writeHead(500, { 'Content-Type': 'application/json' });
+            clientRes.end(JSON.stringify({
+              type: 'error',
+              error: {
+                type: 'api_error',
+                message: `cc-bridge (${adapter.name}): no API key configured for target "${currentTarget}"`,
+              },
+            }));
+            return;
+          }
         }
       }
 
@@ -1321,26 +1391,31 @@ function startServer(cfg, adapter) {
 
       // 从 startIdx 起找下一个可用的 KEY：优先「未试过且未熔断」；若未试过的都
       // 熔断了，退而取「未试过」的第一个（熔断只是优化、不是硬约束，总得试一个）；
-      // 全试过了返回 -1。
+      // 全试过了返回 -1。请求级收窄（eligibleKeys）生效时只在子集内找——子集全
+      // 试遍即 -1，绝不落到别的成员的 KEY 上。
       function pickNextKey() {
         for (let i = 0; i < KEYS.length; i++) {
+          if (eligibleKeys && !eligibleKeys.has(i)) continue;
           if (!tried.has(i) && Date.now() >= keyBlockedUntil[i]) return i;
         }
         for (let i = 0; i < KEYS.length; i++) {
+          if (eligibleKeys && !eligibleKeys.has(i)) continue;
           if (!tried.has(i)) return i;
         }
         return -1;
       }
 
-      // 所有 KEY 都试遍仍失败：把最后的错误返回给客户端。
+      // 所有 KEY 都试遍仍失败：把最后的错误返回给客户端。收窄生效时口径跟着收
+      // 窄（报「该成员的 N 个 KEY」而非全局 KEY 数）。
       function finalError(last) {
         if (clientRes.headersSent) { try { clientRes.destroy(); } catch {} return; }
         const status = last && last.status ? last.status : 502;
+        const nKeys = eligibleKeys ? eligibleKeys.size : KEYS.length;
         let msg;
         if (last && last.err) {
-          msg = `upstream error on all ${KEYS.length} key(s): ${last.err.message}`;
+          msg = `upstream error on all ${nKeys} key(s): ${last.err.message}`;
         } else if (last && last.status) {
-          msg = `upstream returned ${last.status} on all ${KEYS.length} key(s)`;
+          msg = `upstream returned ${last.status} on all ${nKeys} key(s)`;
         } else {
           msg = 'upstream error';
         }
@@ -1445,6 +1520,7 @@ function startServer(cfg, adapter) {
           path: upPath,
           method: clientReq.method,
           headers: buildHeaders(KEYS[keyIdx].value, keyUp),
+          agent: proxyAgentFor(keyUp),
         };
         activeUpReq = transport.request(opts, (upRes) => {
           // 出站 socket 开 TCP keepalive：长流（SSE 数十分钟）期间若 TCP 层无数据
@@ -1560,6 +1636,7 @@ function startServer(cfg, adapter) {
     }
     console.log(`[bridge] spoof → target : ${pairs.map((p) => `${p.spoof} → ${p.target}`).join('   |   ')}`);
     console.log(`[bridge] API keys     : ${KEYS.map((k) => k.name).join(', ')}`);
+    if (cfg.UPSTREAM_PROXY) console.log(`[bridge] upstream via : ${cfg.UPSTREAM_PROXY} (proxy)`);
     console.log(`[bridge] logging      : ${VERBOSE ? 'on' : 'off'}`);
   });
 

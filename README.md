@@ -16,7 +16,7 @@
 </div>
 
 A local transparent bridge that lets **Claude Code talk to third-party model
-upstreams** (GLM / DeepSeek / MiMo …) through a single local endpoint. Each upstream
+upstreams** (GLM / DeepSeek / MiMo / Agnes …) through a single local endpoint. Each upstream
 lives in its own adapter module under a `<name>-bridge/` directory and shares the
 same framework (`core/`). Thinking fields pass through verbatim — the upstream
 interprets Claude Code's `/effort` tier by its own official mapping (see
@@ -24,8 +24,9 @@ interprets Claude Code's `/effort` tier by its own official mapping (see
 **multiple API keys with automatic failover**.
 
 > **Currently implemented:** `glm` (GLM-5.3 on z.ai / Zhipu bigmodel.cn), `ds`
-> (DeepSeek-V4), `mimo` (Xiaomi MiMo). `kimi` / `qwen` are reserved
-> placeholders — see [Adding a new upstream](#adding-a-new-upstream).
+> (DeepSeek-V4), `mimo` (Xiaomi MiMo), `agnes` (Agnes AI 2.5 — Anthropic-
+> compatible endpoint; free promotional flash tier as of 2026-09). `kimi` / `qwen`
+> are reserved placeholders — see [Adding a new upstream](#adding-a-new-upstream).
 
 Install it once and start it from **any directory** with a single command:
 `cc-bridge`.
@@ -79,6 +80,8 @@ give you:
 | `glm` | ✅ implemented | [glm-bridge/](glm-bridge/) | GLM-5.3 (z.ai / Zhipu bigmodel.cn) |
 | `ds` | ✅ implemented | [ds-bridge/](ds-bridge/) | DeepSeek-V4 (pro / flash) |
 | `mimo` | ✅ implemented | [mimo-bridge/](mimo-bridge/) | MiMo-V2.5-Pro (Xiaomi) |
+| `agnes` | ✅ implemented | [agnes-bridge/](agnes-bridge/) | Agnes-2.5 (flash / pro / pro-beta) |
+| `hybrid` | ✅ implemented | [hybrid-bridge/](hybrid-bridge/) | multi-provider mix (per-model routing) |
 | `kimi` | 🚧 reserved | [kimi-bridge/](kimi-bridge/) | — |
 | `qwen` | 🚧 reserved | [qwen-bridge/](qwen-bridge/) | — |
 
@@ -89,6 +92,16 @@ give you:
   in [`core/`](core/). Each upstream's specifics (model caps, functional body
   fixes) live in its `<name>-bridge/adapter.js`. Adding an upstream
   touches only one new file + one registry line.
+- **Hybrid multi-provider upstream.** The `hybrid` upstream serves several
+  providers behind one port. Its config lists one section per member provider
+  (`GLM_BASES` / `GLM_API_KEY_1` / `DS_BASE` / `DS_API_KEY_1` … — any
+  implemented upstream can be a member), and `MODEL_MAP` targets carry a
+  `provider:` prefix (`claude-opus-4-8->glm:glm-5.3,claude-haiku-4-5->ds:deepseek-v4-flash`;
+  the prefix can be omitted when exactly one configured provider knows the
+  model). Each request routes to its target's provider — keys rotate and fail
+  over within that provider only (cross-provider failover would just 400), and
+  each member adapter's body fixes still apply. See
+  [hybrid-bridge/README.md](hybrid-bridge/README.md).
 - **Request-body passthrough.** Each adapter's job is minimal: rewrite
   `body.model` (spoof → target), clamp `max_tokens` to the model's real cap,
   and apply genuinely functional fixes only (e.g. DeepSeek's tool-sequence
@@ -359,6 +372,12 @@ verbatim, and each upstream interprets it by its own official mapping:
   endpoint. ⚠️ `none` is not accepted (400).
 - **MiMo**: thinking is on/off only; any thinking tier (low and above) turns
   deep thinking on.
+- **Agnes-2.5** (wiki.agnes-ai.com): the Anthropic-compatible endpoint accepts
+  the `thinking` field (`{type: "enabled", budget_tokens}`); the gateway
+  outputs thinking blocks **by default** (observed even when not requested —
+  Claude Code handles them fine). No official `/effort` tier mapping is
+  published; thinking fields pass through verbatim. The endpoint is overseas —
+  set `UPSTREAM_PROXY` in the env file if a proxy is required to reach it.
 
 Mappings are as of 2026-08 and may change per model version — check the
 official docs (links in each `<name>-bridge/<name>.env.example`).
@@ -382,6 +401,11 @@ That's it — the framework, CLI, multi-key failover, and daemon all work
 unchanged. Users then run `cc-bridge kimi start`, edit `~/.cc-bridge/kimi.env`,
 etc.
 
+To serve several providers behind one port instead of adding another
+single-provider adapter, use the built-in `hybrid` upstream — it composes any
+implemented adapters with per-model routing and needs no new adapter code (see
+[hybrid-bridge/README.md](hybrid-bridge/README.md)).
+
 ## Files
 
 | path                     | purpose                                            |
@@ -398,8 +422,10 @@ etc.
 | `glm-bridge/adapter.js`  | GLM (z.ai / Zhipu bigmodel.cn) adapter — body adaptation, model caps |
 | `ds-bridge/adapter.js`   | DeepSeek (DeepSeek-V4) adapter — body adaptation, tool-sequence repair |
 | `mimo-bridge/adapter.js` | MiMo (Xiaomi MiMo-V2.5-Pro) adapter — body adaptation, model caps |
+| `agnes-bridge/adapter.js` | Agnes AI (Agnes-2.5) adapter — model caps; overseas endpoint, optional `UPSTREAM_PROXY` |
+| `hybrid-bridge/adapter.js` | hybrid multi-provider adapter — per-model routing across providers (composes the concrete adapters) |
 | `kimi-bridge/`, `qwen-bridge/` | reserved placeholders (adapter + README)    |
-| `<name>-bridge/<name>.env.example` | per-upstream config template (GLM / DeepSeek / MiMo filled; Kimi/Qwen reserved) |
+| `<name>-bridge/<name>.env.example` | per-upstream config template (GLM / DeepSeek / MiMo / Agnes / Hybrid filled; Kimi/Qwen reserved) |
 | `~/.cc-bridge/<upstream>.env` | real config (yours, gitignored, never packaged) |
 | `~/.cc-bridge/stats-<upstream>.json` | usage stats snapshot (hourly buckets, survives restarts; feeds `cc-bridge stats` / `cc-bridge dashboard`) |
 | `~/.cc-bridge/default-upstream` | user-set default upstream (created by `set default upstream`; absent = built-in `ds`) |

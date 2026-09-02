@@ -14,9 +14,9 @@
 
 </div>
 
-一个本地透明桥接框架，让 **Claude Code 访问第三方模型上游**（GLM / DeepSeek / MiMo ……）。每个上游在独立的 `<name>-bridge/` 目录下有一个 adapter 模块，共享同一套框架（`core/`）。思考字段原样透传——上游按各自官方映射表解读 Claude Code 的 `/effort` 档位（见[思考等级透传](#思考等级透传)）；同时支持**多 API_KEY 容灾**。
+一个本地透明桥接框架，让 **Claude Code 访问第三方模型上游**（GLM / DeepSeek / MiMo / Agnes ……）。每个上游在独立的 `<name>-bridge/` 目录下有一个 adapter 模块，共享同一套框架（`core/`）。思考字段原样透传——上游按各自官方映射表解读 Claude Code 的 `/effort` 档位（见[思考等级透传](#思考等级透传)）；同时支持**多 API_KEY 容灾**。
 
-> **当前已实现：** `glm`（GLM-5.3，z.ai 国际版 / 智谱 bigmodel.cn 国内版）、`ds`（DeepSeek-V4）、`mimo`（小米 MiMo）。`kimi` / `qwen` 为预留占位——见[添加新上游](#添加新上游)。
+> **当前已实现：** `glm`（GLM-5.3，z.ai 国际版 / 智谱 bigmodel.cn 国内版）、`ds`（DeepSeek-V4）、`mimo`（小米 MiMo）、`agnes`（Agnes AI 2.5——Anthropic 兼容端点，flash 档 2026-09 起促销免费）。`kimi` / `qwen` 为预留占位——见[添加新上游](#添加新上游)。
 
 安装一次后，在**任意目录**下用一条命令即可启动：`cc-bridge`。
 
@@ -59,15 +59,18 @@ Claude Code 本身支持用纯配置指向自定义端点（`~/.claude/settings.
 | `glm` | ✅ 已实现 | [glm-bridge/](glm-bridge/) | GLM-5.3（z.ai / 智谱 bigmodel.cn） |
 | `ds` | ✅ 已实现 | [ds-bridge/](ds-bridge/) | DeepSeek-V4（pro / flash） |
 | `mimo` | ✅ 已实现 | [mimo-bridge/](mimo-bridge/) | 小米 MiMo-V2.5-Pro |
+| `agnes` | ✅ 已实现 | [agnes-bridge/](agnes-bridge/) | Agnes-2.5（flash / pro / pro-beta） |
+| `hybrid` | ✅ 已实现 | [hybrid-bridge/](hybrid-bridge/) | 多提供商混合（按模型路由） |
 | `kimi` | 🚧 预留 | [kimi-bridge/](kimi-bridge/) | — |
 | `qwen` | 🚧 预留 | [qwen-bridge/](qwen-bridge/) | — |
 
 ## 它能做什么
 
 - **框架 + 按上游分 adapter。** 所有与上游无关的通用逻辑（HTTP 服务、多 KEY 容灾、model 改写、modelUsage 注入、daemon）都在 [`core/`](core/)；每个上游的专属逻辑（请求体适配、模型上限表）在各自的 `<name>-bridge/adapter.js`。新增上游只需加一个文件 + 注册表一行。
+- **混合上游（hybrid）：一个端口服务多个提供商。** `hybrid` 上游把多个已实现上游组合在同一个端口后面，配置按「成员分节」组织（`GLM_BASES` / `GLM_API_KEY_1` / `DS_BASE` / `DS_API_KEY_1` …，任何已实现上游都能当成员），`MODEL_MAP` 的 target 带 `provider:` 前缀限定归属（`claude-opus-4-8->glm:glm-5.3,claude-haiku-4-5->ds:deepseek-v4-flash`；恰好一家成员认识该模型时可省略前缀自动限定）。每条请求路由到 target 所属成员——KEY 只在该成员内轮换 / 容灾（跨成员容灾只会 400），成员 adapter 的专属请求体修复照常生效。见 [hybrid-bridge/README.md](hybrid-bridge/README.md)。
 - **请求体透传。** adapter 的职责最小化：改写 `body.model`（spoof → target）、钳 `max_tokens` 到模型真实上限、只做真正功能性的修复（如 DeepSeek 的 tool 序列修复——不修该端点校验会 400）。其余一切（`context_management`、`cache_control`、Anthropic 专有 system 段、`metadata.user_id`、思考字段）按客户端原样转发、与直连形态一致（各上游清单见对应 `<name>-bridge/README.md`）。
 - **安全分类器路由（GLM）。** Claude Code auto 模式有个安全分类器，每次工具调用前都发一个请求（约是主对话请求数的 3 倍）且按全额模型倍率计费——实测占 z.ai Coding Plan 额度约 70%。`~/.cc-bridge/glm.env` 里的 `CLASSIFIER_MODE` 可把这些请求改走免费模型（`on`）或由桥本地伪造放行响应（`off`，默认——0 消耗，但无安全判断）。见 [glm-bridge/README.md](glm-bridge/README.md)。
-- **思考等级透传。** 桥不改写任何思考字段——`/effort` 档位原样转发，各上游按官方映射解读（GLM：xhigh/max → max；DeepSeek：max → max、xhigh → high；MiMo：任何思考档即开深度思考）。（见[思考等级透传](#思考等级透传)。）
+- **思考等级透传。** 桥不改写任何思考字段——`/effort` 档位原样转发，各上游按官方映射解读（GLM：xhigh/max → max；DeepSeek：max → max、xhigh → high；MiMo：任何思考档即开深度思考；Agnes：网关默认输出 thinking 块、官方未发布档位映射）。（见[思考等级透传](#思考等级透传)。）
 - **多 KEY 容灾。** 把多个 KEY 各自成行配成编号变量（`API_KEY_1=…`、`API_KEY_2=…`…，每行一个，方便单独注释账号来源、或整行注释掉禁用某 KEY；旧式逗号分隔 `API_KEY=k1,k2` 仍兼容）。某 KEY 返回 `401`/`403`（被拒 / 额度用尽）时，桥把它熔断 60 秒并立即切换下一个 KEY；瞬态错误（`429`/`5xx`/网络）先在同 KEY 重试、用尽再换。KEY 按 `API_KEY_n_PRIORITY` 优先级从高到低使用（不配则按编号顺序），主力 KEY 熔断才落备用、到期自动回切。URL 始终不变，只轮换 KEY。（见[多 KEY 容灾](#多-key-容灾)。）
 - **按上游隔离。** 每个上游有独立配置（`~/.cc-bridge/<upstream>.env`）、pid 文件、日志文件，多个上游可作为 daemon 并存（用不同 `PROXY_PORT`）。
 - **modelUsage 注入（真实上下文窗口）。** 桥给每条响应注入 `modelUsage`（spoof ID 与 target 双 key 命中），客户端显示的上下文窗口与真实模型一致——不注入的话，客户端会显示 spoof 模型的窗口。窗口值来自各 adapter 按官方文档整理的 target 模型表（如 glm-5.3 = 1M、glm-4.6 = 200K），多对 `MODEL_MAP` 下各映射对各注入各的窗口；在上游配置里显式设 `CONTEXT_WINDOW` / `MAX_OUTPUT_TOKENS` 则覆盖表值。
@@ -230,6 +233,7 @@ cc-bridge claude -- -p "hello"   # 也接受 "--" 分隔符
 - **GLM-5.3**（docs.bigmodel.cn）：low / medium / high → high；xhigh / max / ultracode → max。默认档即 max。
 - **DeepSeek-V4**（V4-Flash-0731 / V4-Pro-0813，api-docs.deepseek.com）：两版本映射官方明文一致——low → low；medium / high / xhigh → high；max → max。Claude Code 类 Agent 请求会被端点自动设为 max。⚠️ 不认 `none`（400）。
 - **MiMo**：思考只有开 / 关两态，任何思考档（low 及以上）即开启深度思考。
+- **Agnes-2.5**（wiki.agnes-ai.com）：Anthropic 兼容端点接受 `thinking` 字段（`{type: "enabled", budget_tokens}`）；网关**默认输出** thinking 块（未请求思考时也有——实测，Claude Code 可正常处理）。官方未发布 `/effort` 档位映射表，思考字段原样透传。端点在境外——需要代理时在配置文件里设 `UPSTREAM_PROXY`。
 
 映射关系为 2026-08 版本口径、可能随模型版本变化——以官方文档为准（链接见各 `<name>-bridge/<name>.env.example`）。
 
@@ -245,6 +249,8 @@ CC-Bridge 就是为扩展而设计的。新增一个上游（如 `kimi`）：
 3. **文档** 写 `kimi-bridge/README.md`，按需补配置模板。
 
 完成——框架、CLI、多 KEY 容灾、daemon 全部无需改动即可工作。用户随后用 `cc-bridge kimi start`、编辑 `~/.cc-bridge/kimi.env` 等。
+
+如果想的是「一个端口同时服务多个提供商」而不是再接一家新上游，直接用内置的 `hybrid` 混合上游——它按模型路由组合任意已实现 adapter，无需写新 adapter（见 [hybrid-bridge/README.md](hybrid-bridge/README.md)）。
 
 ## 文件
 
@@ -262,8 +268,10 @@ CC-Bridge 就是为扩展而设计的。新增一个上游（如 `kimi`）：
 | `glm-bridge/adapter.js`   | GLM（z.ai / 智谱 bigmodel.cn）adapter——请求体适配、模型上限表 |
 | `ds-bridge/adapter.js`    | DeepSeek（DeepSeek-V4）adapter——请求体适配、tool 序列修复 |
 | `mimo-bridge/adapter.js`  | MiMo（小米 MiMo-V2.5-Pro）adapter——请求体适配、模型上限表 |
+| `agnes-bridge/adapter.js` | Agnes AI（Agnes-2.5）adapter——模型上限表；境外端点，可选 `UPSTREAM_PROXY` |
+| `hybrid-bridge/adapter.js` | 混合上游 adapter——按模型路由到多个提供商（组合既有 adapter） |
 | `kimi-bridge/`、`qwen-bridge/` | 预留占位（adapter + README）                |
-| `<name>-bridge/<name>.env.example` | 按上游的配置模板（GLM / DeepSeek / MiMo 已填；Kimi/Qwen 预留）  |
+| `<name>-bridge/<name>.env.example` | 按上游的配置模板（GLM / DeepSeek / MiMo / Agnes / Hybrid 已填；Kimi/Qwen 预留）  |
 | `~/.cc-bridge/<upstream>.env` | 真实配置（你的，gitignored，绝不打包）        |
 | `~/.cc-bridge/stats-<upstream>.json` | 用量统计快照（小时分桶，重启不清零；供 `cc-bridge stats` / `cc-bridge dashboard` 读取） |
 | `~/.cc-bridge/default-upstream` | 用户设置的默认上游（`set default upstream` 生成；不存在 = 内置默认 `ds`） |

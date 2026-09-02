@@ -9,7 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const { REGISTRY, DEFAULT_UPSTREAM, getDefaultUpstream } = require('./adapter');
+const { REGISTRY, DEFAULT_UPSTREAM, getDefaultUpstream, loadAdapter, isImplemented } = require('./adapter');
 
 const DIR = path.join(os.homedir(), '.cc-bridge');
 
@@ -221,6 +221,26 @@ function loadConfig(opts = {}) {
   const upstream = opts.upstream || getDefaultUpstream();
   const file = resolveConfigPath(upstream, opts.configPath);
   const env = parseEnv(file);
+
+  // 上游专属配置预处理钩子（可选能力，见 core/adapter.js 接口注释）：adapter 实现
+  // preprocessEnv(env) 时先调用，让它把自定义「分节配置」改写（mutate）为标准平铺
+  // 变量——hybrid 混合桥用它把 PROVIDER 分节摊平为 API_BASES / API_KEY_n /
+  // MODEL_MAP，摊平后下方所有解析 / 校验逻辑无感知复用。未实现该钩子的上游零影
+  // 响；预留未实现的上游（kimi / qwen）跳过（不破坏 stop / status / config 等
+  // 只读命令）。钩子抛错不向上传播——记入 providerConfigError，由 validate 报给
+  // 用户，保持 loadConfig「永不抛错」的契约。
+  let providerConfigError = null;
+  if (isImplemented(upstream)) {
+    try {
+      const hookAdapter = loadAdapter(upstream);
+      if (hookAdapter && typeof hookAdapter.preprocessEnv === 'function') {
+        hookAdapter.preprocessEnv(env);
+      }
+    } catch (e) {
+      providerConfigError = e.message;
+    }
+  }
+
   const get = (k, d) => {
     if (process.env[k] !== undefined && process.env[k] !== '') return process.env[k];
     if (env[k] !== undefined) return env[k];
@@ -312,6 +332,11 @@ function loadConfig(opts = {}) {
     MAX_OUTPUT_TOKENS: parseInt(get('MAX_OUTPUT_TOKENS', '0'), 10) || 0,
     VERBOSE: (get('PROXY_LOG', '1') !== '0'),
     DUMP: (get('PROXY_DUMP', '0') === '1'),
+    // 上游转发代理（可选）：配置后所有对上游端点的 https 请求经此 HTTP 代理出站
+    //（如 http://127.0.0.1:1087）——境外上游（agnes 等）直连不通 / 不稳时用。
+    // 未配置（默认）保持直连，零影响。仅作用于框架主转发路径（含断流续写），
+    // 不影响分类器通道（classifier 自带 HTTPS_PROXY 感知）。
+    UPSTREAM_PROXY: (get('UPSTREAM_PROXY', '') || '').trim(),
     // CC 安全分类器路由（详见 core/classifier.js）：off=直接放行（默认，不走模型，0 消耗无判断）；
     // on=走 agnes 免费模型（主模型失败切备用）。CLASSIFIER_MODE 未配时默认 off。
     CLASSIFIER_MODE: (get('CLASSIFIER_MODE', 'off') || 'off').toLowerCase(),
@@ -325,6 +350,8 @@ function loadConfig(opts = {}) {
     modelMapError,
     apiBasesError,
     keyAttrErrors,
+    // 上游 preprocessEnv 钩子的错误（分节配置摊平失败等；hybrid 用）。null = 通过。
+    providerConfigError,
     configPath: file,
   };
 }
@@ -335,6 +362,7 @@ function validate(cfg) {
   if (!cfg.KEYS.length) missing.push('API_KEY_1 (or legacy API_KEY)');
   if (cfg.modelMapError) missing.push(`MODEL_MAP (${cfg.modelMapError})`);
   if (cfg.apiBasesError) missing.push(`API_BASES (${cfg.apiBasesError})`);
+  if (cfg.providerConfigError) missing.push(`provider config (${cfg.providerConfigError})`);
   for (const e of cfg.keyAttrErrors || []) missing.push(e);
   return missing;
 }
@@ -383,6 +411,7 @@ function showConfig(upstream) {
   console.log(`config file   : ${cfg.configPath}`);
   console.log(`PROXY_PORT    : ${cfg.PORT}`);
   console.log(`PROXY_LOG     : ${cfg.VERBOSE ? '1' : '0'}`);
+  if (cfg.UPSTREAM_PROXY) console.log(`upstream proxy: ${cfg.UPSTREAM_PROXY}`);
   if (cfg.API_BASES.length > 1) {
     console.log(`api bases     : ${cfg.API_BASES.length} endpoints`);
     cfg.API_BASES.forEach((b, i) => {
@@ -402,6 +431,7 @@ function showConfig(upstream) {
     console.log(`model map     : (unset — will use adapter default spoof → target)`);
   }
   if (cfg.modelMapError) console.log(`MODEL_MAP err : ${cfg.modelMapError}`);
+  if (cfg.providerConfigError) console.log(`provider err  : ${cfg.providerConfigError}`);
   const thinkEntries = Object.entries(cfg.THINK_MAP || {});
   if (thinkEntries.length) {
     console.log(`thinking      : per-model  (default=${cfg.THINK_DEFAULT || 'adapter max'})`);

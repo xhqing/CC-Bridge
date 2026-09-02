@@ -1,7 +1,7 @@
 {
   "name": "cc-bridge",
-  "version": "2.15.2",
-  "description": "CC-Bridge — Claude Code upstream bridge framework (GLM / DeepSeek / MiMo / Kimi / Qwen …). Routes Claude Code to third-party models via spoofed whitelist IDs, pins per-model thinking levels via config (CC's /effort doesn't affect the upstream), and fails over across multiple API keys. GLM / DeepSeek / MiMo adapters included.",
+  "version": "2.16.0",
+  "description": "CC-Bridge — Claude Code upstream bridge framework (GLM / DeepSeek / MiMo / Agnes / Kimi / Qwen …). Routes Claude Code to third-party models via spoofed whitelist IDs, pins per-model thinking levels via config (CC's /effort doesn't affect the upstream), and fails over across multiple API keys. GLM / DeepSeek / MiMo / Agnes adapters included, plus a hybrid upstream that serves several providers behind one port with per-model routing.",
   "private": true,
   "bin": {
     "cc-bridge": "bin/cc-bridge.js"
@@ -15,6 +15,8 @@
     "qwen-bridge",
     "mimo-bridge",
     "ds-bridge",
+    "agnes-bridge",
+    "hybrid-bridge",
     "README.md",
     "README.zh-CN.md",
     "VERSION",
@@ -34,8 +36,12 @@
     "zai",
     "deepseek",
     "deepseek-v4",
+    "agnes",
+    "agnes-2.5-flash",
     "kimi",
     "qwen",
+    "hybrid",
+    "multi-provider",
     "bridge",
     "proxy",
     "anthropic",
