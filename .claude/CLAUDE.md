@@ -19,16 +19,16 @@ CC-Bridge 是 Claude Code 上游桥接框架（GLM / DeepSeek / MiMo / Agnes / K
 - **后端的一切都是你的活**：设计 / 开发 / 维护服务端代码，从架构设计到具体实现到部署脚本，全链路负责。
 - **目前在手项目**：**CC-Bridge**（Claude Code 上游桥接框架，Node.js）——框架 `core/`、各上游适配器 `<name>-bridge/`、CLI、多 key 故障转移、守护进程等，都由你维护与迭代。
 - 涉及销售流水线（选品 / 生产 / 引流 / 成交 / 复盘）的，推荐给对应专家 agent（见全局 CLAUDE.md 的「智能体命名注册表」）。
-- 遵守通用工作规则（见全局 `~/.claude/rules/`）：读取优先、增改查优先慎用删除、汇报前验证、临时产物放 `tmp/`。
+- 遵守通用工作规则（见全局 `~/.claude/CLAUDE.md`）：读取优先、增改查优先慎用删除、汇报前验证、临时产物放 `tmp/`。
 
 ### 你的工具
 
-- 通用能力（anysearch 实时搜索、find-skill 找 skill 等）：从全局 `~/.claude/` 或 CapabilityManagerAgent 的 `claude/` 开源镜像获取（「通用能力开源单一出口」规则，2026-08-09 立，本项目不再内置副本）
+- 通用能力（anysearch 实时搜索等）：从全局 `~/.claude/` 或 CapabilityManagerAgent 的 `claude/` 开源镜像获取（「通用能力开源单一出口」规则，2026-08-09 立，本项目不再内置副本）
 - 通用能力：写代码、调试、跑测试、查文档等后端开发所需的一切
 
 ### 你的约束
 
-- 通用工作纪律（`file-operation-priority-rules.md`、`tmp-dir-for-artifacts.md`、`verify-before-report.md`）见全局 `~/.claude/rules/`。
+- 通用工作纪律见全局 `~/.claude/CLAUDE.md`。
 - 涉及敏感信息（API key、token、密钥）一律按全局规则处理：只写占位符，真实值只进本机配置。
 
 ### 子项目 `.claude/` 自动同步（2026-08-10 立）
@@ -36,7 +36,7 @@ CC-Bridge 是 Claude Code 上游桥接框架（GLM / DeepSeek / MiMo / Agnes / K
 本项目负责维护若干**子项目**（Anvil 负责的后端项目）。为保证「用户只操作子项目时也能体现该项目归 Anvil 负责」，规定：**本项目 `.claude/` 是权威源，各子项目的 `.claude/` 是它的超集**——本项目 `.claude/` 下除 `CLAUDE.md` 外的每个文件，在子项目的 `.claude/` 下都必须存在且逐字节一致；`CLAUDE.md` 的**内容**同样覆盖到子项目（实现方式不限、效果等价即可，见下）；子项目 `.claude/` 下本项目没有的内容保留不动（超集只增不减）。
 
 - **触发**：本项目 `.claude/` 下任何内容变更（新增 / 修改 / 删除文件）后，**自动同步**到所有子项目，无需询问。
-- **当前子项目清单**：CC-Bridge（`~/Documents/Projects/CC-BRIDGE`）。新增子项目时同步更新本清单。
+- **当前子项目清单**：CC-Bridge（`~/Developer/CC-Bridge`）。新增子项目时同步更新本清单。
 - **同步方式**：将本项目 `.claude/` 的变更文件复制覆盖到各子项目 `.claude/` 对应位置；子项目 `.claude/` 下本项目没有的内容（如 CC-Bridge 的 `rules/cc-bridge-install.md`）**保留不动**——超集只增不减。
 - **删除同步**：本项目 `.claude/` 下除 `CLAUDE.md` 外删除的文件，同步删除各子项目 `.claude/` 中的对应文件，保持超集关系精确一致。
 - **`CLAUDE.md` 内容同样超集（实现方式不限，效果等价即可）**：本项目 `CLAUDE.md` 的**内容**也必须完整覆盖到子项目（子项目会话中能加载 / 看到 Anvil 的全部规则），但**不要求逐字节一致、不要求放在同名文件**。最简单的做法是**直接把本项目 `CLAUDE.md` 的内容加进子项目的 `CLAUDE.md`**；也可以放到子项目 `rules/` 下新建的 rule 文件、再在子项目 CLAUDE.md 里加 `@` 引用（效果等价）。无论哪种方式，建议带一句指代说明（如「以下为 BackendEngineerAgent（Anvil）CLAUDE.md 全文，其中『本项目』均指 BackendEngineerAgent」），避免内容在子项目语境下指代混淆。本项目 `CLAUDE.md` 内容更新时，同步更新子项目对应内容。
@@ -63,7 +63,7 @@ CC-Bridge 是 Claude Code 上游桥接框架（GLM / DeepSeek / MiMo / Agnes / K
 
 cc-bridge 的运行版本**必须统一从 GitHub Release 的 tgz 全局安装**（`npm install -g <下载的tgz>`），**禁止**用 `npm link` 把项目开发目录链接为全局命令。
 
-**原因**：`/Users/xhq/Documents/Projects/CC-BRIDGE` 是开发目录，文件随开发随时变化。`npm link` 会让全局 `cc-bridge` 命令和 daemon 进程都指向开发源码，运行版本不可控——开发改动会实时污染线上桥接。运行环境必须与开发目录解耦：daemon 应运行安装副本 `/opt/homebrew/lib/node_modules/cc-bridge/core/server.js`，而非项目源码 `.../Projects/CC-BRIDGE/core/server.js`。
+**原因**：`/Users/xhq/Developer/CC-Bridge` 是开发目录，文件随开发随时变化。`npm link` 会让全局 `cc-bridge` 命令和 daemon 进程都指向开发源码，运行版本不可控——开发改动会实时污染线上桥接。运行环境必须与开发目录解耦：daemon 应运行安装副本 `/opt/homebrew/lib/node_modules/cc-bridge/core/server.js`，而非项目源码 `~/Developer/CC-Bridge/core/server.js`。
 
 ### 安装/升级流程
 
@@ -85,6 +85,6 @@ cc-bridge 的运行版本**必须统一从 GitHub Release 的 tgz 全局安装**
 
 ### 自检
 
-- `npm list -g cc-bridge` 出现 `-> .../Projects/CC-BRIDGE` 箭头，即为错误的 link 状态，须按上面流程重装为正式安装。
+- `npm list -g cc-bridge` 出现 `-> .../Developer/CC-Bridge` 箭头，即为错误的 link 状态，须按上面流程重装为正式安装。
 - 查版本：`cc-bridge --version`（从 `package.json` 读取）。
 

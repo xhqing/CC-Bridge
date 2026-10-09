@@ -2,6 +2,13 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [2.16.1] - 2026-10-09
+
+### 变更（项目迁移收尾：CLAUDE.md 内路径更新）
+
+- **为什么改**：项目现址在 `~/Developer/CC-Bridge`（`~/Documents/Projects/CC-BRIDGE` 旧址已弃用，2026-09-08 迁移收尾时发现 `.claude/CLAUDE.md` 仍指旧路径），避免后续会话被引导到不存在的位置。
+- **改了什么**：`.claude/CLAUDE.md` 中 4 处路径（子项目清单 1 处 + 运行隔离原因段 3 处）由旧址更新为 `~/Developer/CC-Bridge`（大小写同时修正为现目录名）。
+
 ## [2.16.0] - 2026-09-01
 
 ### 新增（agnes 上游：Agnes AI 桥接适配器 + 框架上游代理支持，T17）
