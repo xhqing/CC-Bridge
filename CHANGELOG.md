@@ -2,6 +2,13 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [2.16.2] - 2026-10-12
+
+### 变更（智能体专属文件清理：子项目不再携带 `.claude/` 与 `AGENTS.md`〔2026-10-12 用户新规〕）
+
+- **为什么改**：用户 2026-10-12 修订规则（取代原「子项目 `.claude/` 超集」规则）——`CLAUDE.md`、`AGENTS.md`、`.claude/`、项目级 `.pi/` 等「会话启动时按工作目录加载、表征智能体身份」的智能体专属文件只有 Agent 项目允许拥有，非 Agent 项目（含本项目）一律不得存在；后台会话只能以 Agent 项目根为工作目录。本项目原 `.claude/CLAUDE.md`（含 Anvil CLAUDE.md 全文随附）与 `AGENTS.md` 软链随新规清理。
+- **改了什么**：① 删除 `.claude/`（`CLAUDE.md`、`settings.local.example.json`、`settings.local.json`）与 `AGENTS.md` 软链；② `.gitignore` 移除失效的 `.claude/settings.local.json` 忽略块；③ README 中英双语：「开发」节补负责工程师声明（Anvil）与「禁止 `npm link` / 运行版本一律装 Release 构建」的运行版本隔离要点，「发布新版本」节补「发布流程到 GitHub Release 为止、安装升级由使用者自行决定」说明；项目简介 / 架构要点 / 安装与发版流程原 README 已覆盖，未重复迁移。
+
 ## [2.16.1] - 2026-10-09
 
 ### 变更（项目迁移收尾：CLAUDE.md 内路径更新）

@@ -456,7 +456,16 @@ version lives in [VERSION](VERSION); all changes are recorded in
 
 This directory is the **development workspace** — the source you edit and push to
 git. End users install a published build tarball. The flow is: edit here → test →
-bump version → publish → install.
+bump version → publish → install. The project is maintained by **Anvil**
+(BackendEngineerAgent, the team's backend development engineer).
+
+**Do not `npm link` this directory** as the global `cc-bridge` command: the dev
+tree changes at any moment, so the CLI and the daemon would silently run from
+source instead of a released build. Always install a published build tarball
+(see [Install](#install)); if `npm list -g cc-bridge` shows a `-> …/CC-Bridge`
+arrow, the global install is wrongly linked and has to be redone. The daemon
+should point at the installed copy (`…/lib/node_modules/cc-bridge/core/server.js`),
+never at the project source.
 
 ```bash
 git clone <repo> && cd CC-Bridge
@@ -471,6 +480,8 @@ cc-bridge glm start                                             # run from sourc
 3. `git commit -a -m "release vX.Y.Z"` then `git tag vX.Y.Z`.
 4. `npm pack` → upload `cc-bridge-<ver>.tgz` to the GitHub Release.
 5. Install from the Release on the target machine (see [Install](#install)).
+   Publishing stops at the GitHub Release; installing and upgrading the machines
+   that use it stays a separate, user-controlled step.
 
 ## License & Attribution
 

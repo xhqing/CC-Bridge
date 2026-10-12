@@ -290,7 +290,9 @@ CC-Bridge 就是为扩展而设计的。新增一个上游（如 `kimi`）：
 
 ## 开发
 
-本目录是**开发工作区**——你编辑、推送到 git 的源码。最终用户安装发布版的构建 tarball。流程：在此编辑 → 测试 → bump 版本 → 发布 → 安装使用。
+本目录是**开发工作区**——你编辑、推送到 git 的源码。最终用户安装发布版的构建 tarball。流程：在此编辑 → 测试 → bump 版本 → 发布 → 安装使用。本项目由 **Anvil**（BackendEngineerAgent，团队的后端开发工程师）负责维护。
+
+**不要把本目录 `npm link` 成全局 `cc-bridge` 命令**：开发源码随时在变，CLI 与 daemon 会静默地从源码运行、而非已发布的构建。运行版本一律安装发布 tarball（见[安装](#安装)）；`npm list -g cc-bridge` 若出现 `-> …/CC-Bridge` 箭头，说明全局安装被错误 link、应重装。daemon 进程应指向安装副本（`…/lib/node_modules/cc-bridge/core/server.js`），绝不指向项目源码。
 
 ```bash
 git clone <repo> && cd CC-Bridge
@@ -304,7 +306,7 @@ cc-bridge glm start                                             # 从源码后�
 2. 在 `CHANGELOG.md` 顶部加 `## [X.Y.Z] - YYYY-MM-DD` 条目。
 3. `git commit -a -m "release vX.Y.Z"` 后 `git tag vX.Y.Z`。
 4. `npm pack` → 把 `cc-bridge-<版本>.tgz` 上传到 GitHub Release。
-5. 在目标机器上从 Release 安装（见[安装](#安装)）。
+5. 在目标机器上从 Release 安装（见[安装](#安装)）。发布流程到 GitHub Release 为止——安装与升级是使用者自行决定的事，不随发布代做。
 
 ## 版权与署名
 
