@@ -1,0 +1,18 @@
+{
+  "extensions": [
+    "~/Developer/BackendEngineerAgent/.pi/extensions",
+    "./extensions"
+  ],
+  "skills": [
+    "~/Developer/BackendEngineerAgent/.pi/skills",
+    "./skills"
+  ],
+  "prompts": [
+    "~/Developer/BackendEngineerAgent/.pi/prompts",
+    "./prompts"
+  ],
+  "themes": [
+    "~/Developer/BackendEngineerAgent/.pi/themes",
+    "./themes"
+  ]
+}

@@ -2,6 +2,17 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 变更（子项目 `.pi` 由软链接改为真实目录 + 资源引用〔2026-10-30 用户新规〕）
+
+- **为什么改**：用户 2026-10-30 修订「智能体专属文件」规则（取代 2026-10-17 的「`.pi` 也挂软链接」）。旧做法把本项目的 `.pi` 整个指向 `../BackendEngineerAgent/.pi`，导致本子项目无法拥有自己的 pi 配置——往 `.pi` 写任何东西都会落到 Agent 项目里，污染全部兄弟子项目、并进 Agent 项目的 git 历史；而 pi 的 `AGENTS.md` 没有 include / 导入机制，身份层只能靠软链接保持一致（复制必然漂移）、能力层适合用路径引用来做超集。
+- **改了什么**：
+  - **`.pi` 软链接 → 真实目录**：删除 `.pi → ../BackendEngineerAgent/.pi` 软链接（`unlink` 只删链接本身，Agent 项目的 `.pi` 未受任何影响），改为本仓库自己的真实目录；新增 `.pi/settings.json`，`extensions` / `skills` / `prompts` / `themes` 四项各引用 `~/Developer/BackendEngineerAgent/.pi/<目录>` 与本项目本地 `./<目录>`（本地目录当前尚未创建，pi 对不存在的资源路径只做登记、不报错，需要时按需新建即可自动发现）。
+  - **`AGENTS.md` 软链接保持不动**：仍指向 `../BackendEngineerAgent/AGENTS.md`（身份层与 Anvil 保持一致）。
+  - **新的填坑纪律**：本项目 `.pi` 只允许**追加**——子项目专属规则写 `.pi/APPEND_SYSTEM.md`，专属扩展 / 技能放本地 `.pi/<目录>`；不得重述 / 覆盖基座规则，不得用 `.pi/SYSTEM.md`（整体替换会冲掉 agent 身份）。
+- **验证**：在 `CC-Bridge` 目录执行 `pi --approve -p "…" --no-session` 正常返回（退出码 0），项目 `settings.json` 解析无错、无资源路径报错；同一套机制已在 Kit 的 `xhqing` 子项目实测过技能与项目级扩展从 Agent 项目加载成功。
+
 ## [2.16.3] - 2026-10-17
 
 ### 变更（Agent 进驻子项目：挂载指回 Anvil 的身份软链〔2026-10-17 用户新规〕）
