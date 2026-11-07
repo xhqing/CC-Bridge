@@ -10,6 +10,12 @@
 
 ## [Unreleased]
 
+### 新增（子项目专属硬规则：`.pi/APPEND_SYSTEM.md`〔2026-11-07 用户新规〕）
+
+- **为什么改**：用户 2026-11-07 定下全局 Leader / Worker 分工——子项目里的任务由以子项目根 / 子项目 worktree 为工作目录的临时 Worker 会话执行，而 Worker 启动时只加载「全局 + 祖先目录 + 当前目录」的上下文，读不到 Agent 项目里关于本项目的具体约定。子项目专属硬规则必须写进各自的 `.pi/APPEND_SYSTEM.md`（Worker 启动即加载），不能上提到 Anvil 的 `AGENTS.md`。
+- **改了什么**：新增 `.pi/APPEND_SYSTEM.md`——只写 CC-Bridge 特有的硬约束：Worker 角色边界；**不许动正在跑的生产 daemon**（glm 8788 / ds 8792 / hybrid 8793，跑的是全局安装产物，联调只能用临时 `--config` + 空闲 `PROXY_PORT`）；禁止 `npm link` 开发目录；上游兼容层不许乱动（请求体原样透传、只在 `/v1/messages` 改写 model、unknown model 返 400、上游专属逻辑只进 adapter、SSE 续写属核心链路）；构建与验证方式（无构建 / 无测试框架，`node --check` + 临时实例实测）；版本与仓库规矩。详细说明仍指向 README / 本 CHANGELOG，不重复展开。
+- **回归检查**：规则内容为纯新增文件，不改任何代码与既有文档；`.pi/settings.json` 与 `AGENTS.md` 软链接未动。附带在 `.gitignore` 补上 `__pycache__/` / `*.pyc`（本地跑 `.github/scripts/validate.py` 会生成 `__pycache__`，此前未被忽略、会在工作区留下未跟踪文件）。
+
 ### 变更（移除访问量徽章，配合停用集中式流量采集）
 
 - **为什么改**：用户 2026-11-04 决定停用 xhqing 仓库的集中式访问量采集，同时不再在各仓库 README 展示访问量徽章。徽章的数据源必须由采集任务每天刷新，采集停掉之后徽章会冻结在旧值，而徽章文案写的是「Visits/day (14d)」——数字不再更新却仍显示成实时数据，留着反而误导读者。

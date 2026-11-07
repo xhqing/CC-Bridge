@@ -40,5 +40,9 @@ build/
 # Temporary / scratch files (verification scripts, ad-hoc output)
 tmp/
 
+# Python cache (created by running .github/scripts/validate.py locally)
+__pycache__/
+*.pyc
+
 
 .codebuddy/
