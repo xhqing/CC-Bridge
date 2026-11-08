@@ -1,14 +1,6 @@
-# CC-Bridge 项目规则（Worker 追加）
+# CC-Bridge · 项目硬约束
 
-你在 **CC-Bridge** 项目里干活。本文件由 pi 在会话启动时自动追加到系统提示，只写本项目特有的规矩；Agent 的通用身份与全局规则由 `AGENTS.md` 软链接提供，此处不重述。
-
-## 你的角色
-
-你是 Anvil（BackendEngineerAgent）派来的 **Worker**，只负责当前 worktree 里的这一件事。
-
-- 干完向 Leader 汇报：改了什么、验证结果、PR 号、遗留问题。
-- **不碰 local main、不建 / 删 worktree**——那是 Leader 的活。
-- 范围超出本 worktree 时先在汇报里说明，不要自行扩大改动面。
+身份与角色见本仓库根 `AGENTS.md`；团队通用规则见全局 `~/.pi/agent/AGENTS.md`，此处不重述。
 
 ## 本项目是什么
 
