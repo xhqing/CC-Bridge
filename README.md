@@ -486,6 +486,6 @@ cc-bridge glm start                                             # run from sourc
 
 CC-Bridge is released under the **MIT License** — see [LICENSE.md](LICENSE.md).
 
-Copyright (c) 2026 **xhqing <https://github.com/xhqing>**.
+Copyright (c) 2026 **xhqing and contributors**.
 
 **Attribution:** If you find CC-Bridge useful, an acknowledgement is appreciated (but not required). Please preserve the copyright notice and license file in any copy or derivative, and link back to the source: https://github.com/xhqing/CC-Bridge.
