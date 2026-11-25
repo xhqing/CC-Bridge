@@ -2,6 +2,12 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+### 变更（会话角色按 subLeader / Worker 两级定位，2026-11-25）
+
+- **为什么改**：用户 2026-11-25 把全团队 Leader / Worker 重新定义为三级角色（agentLeader / subLeader / Worker），判据只看「cwd 所在项目 + 当前是否停在 main」。本项目原写「在本项目（或其 worktree）里干活都是 Anvil 派来的 Worker、不碰 local main 也不建删 worktree——那是 Anvil（Leader）的活」，把本项目主工作区 main 会话也归成了 Worker——那样它就不能建删 worktree、合并自身 PR、发本项目的版，与全局口径冲突。
+- **改了什么**：`AGENTS.md` 的「你的角色」节改写为「会话角色」——本项目主工作区 main = subLeader（local main 快进同步、建删任务 worktree、派 Worker、合并本项目 PR、发本项目版本、回收 Worker；对上级项目与其它项目只读）、本项目非 main 分支 worktree = Worker（只干当前 worktree 的活，不碰 local main、不建删 worktree、不合并 PR、不发版；建删 worktree 与 ff 同步 local main 是 subLeader 的活，agentLeader 可代管）；「项目规则在哪」表格里的「Leader / Worker 分工」改为「会话角色（agentLeader / subLeader / Worker）」。`.pi/APPEND_SYSTEM.md` 的发版行从「由 Leader 走」明确为「由 subLeader（本项目主工作区 main 会话）走，agentLeader 可代管」。
+- **回归检查**：只改规则表述，不动代码、构建与生产 daemon 相关约束；「不许动正在跑的生产实例」「上游兼容层不许乱动」等硬约束原样保留。
+
 ### 新增（CI 门禁：validate 检查 + main 分支 strict 保护）
 
 - **为什么改**：用户 2026-11-03 立规「新建仓库一律必须 strict 模式的 PR CI」，并要求 28 个不合规的存量仓库统一执行最新标准。本项目此前在 PR 上没有门禁——改动合进 main 全靠人工把关，PR 可以拿旧 main 上通过的检查直接合并，回归防护存在缺口。本次补齐团队要求的「三件套」：PR 上真实跑的 CI 检查 + 挂成 required status check + `required_status_checks.strict = true`。

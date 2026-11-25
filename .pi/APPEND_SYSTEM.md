@@ -28,7 +28,7 @@ Claude Code 的**本地透明桥接框架**（Node.js ≥ 14，无构建步骤�
 
 ## 版本与仓库规矩
 
-- 版本以 `VERSION` 为唯一权威（与 `package.json`、`CHANGELOG.md` 一致）；**不在功能分支 bump**，发版由 Leader 走 `/bump` → `/release`。
+- 版本以 `VERSION` 为唯一权威（与 `package.json`、`CHANGELOG.md` 一致）；**不在功能分支 bump**，发版由 subLeader（本项目主工作区 main 会话）走 `/bump` → `/release`，agentLeader 可代管。
 - 每次增删改都记 `CHANGELOG.md`（为什么改 + 改了什么）；待办只进 `TODO.md`；临时产物放 `tmp/`（已忽略，不入库）。
 - main 锁定：改动走 `feat/` / `fix/` / `chore/` 分支 + PR + CI（required check `validate`）+ squash 合并。
 
